@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+asyncpg
+python-dotenv
+mangum
+pydantic
+python-multipart
+boto3==1.34.0
+psycopg2-binary
