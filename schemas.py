@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -81,19 +81,21 @@ class MultipleFileUploadResponse(BaseModel):
     message: str
 
 class FileUploadRecord(BaseModel):
-    id: Optional[int] = None
+    id: int
     original_filename: str
     s3_key: str
     s3_url: str
     file_size: int
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-    metadata: Optional[Dict] = None
-    user_id: Optional[str] = None
+    content_type: str
+    file_content: Optional[str] = None  # NEW
+    score: Optional[float] = 0.0  # NEW
     folder_path: Optional[str] = None
-    content_type: Optional[str] = None
+    user_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
     upload_ip: Optional[str] = None
-    upload_status: Optional[str] = None
+    upload_status: str = "success"
+    created_at: str
+    updated_at: str
 
 class FileUploadListResponse(BaseModel):
     data: List[FileUploadRecord]
