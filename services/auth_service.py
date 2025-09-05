@@ -8,7 +8,8 @@ from fastapi.security import OAuth2PasswordBearer
 
 from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
 from models.database import get_db
-from models.schemas import TokenData, UserRole
+from models.database_models import UserRole
+from models.schemas import TokenData
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,10 @@ class AuthService:
             )
 
     @staticmethod
-    async def get_current_user(token: str = Depends(oauth2_scheme), conn = Depends(get_db)) -> TokenData:
+    async def get_current_user(
+        token: str = Depends(oauth2_scheme), 
+        db = Depends(get_db)
+    ) -> TokenData:
         payload = AuthService.verify_token(token)
         user_id: int = payload.get("user_id")
         email: str = payload.get("email")
@@ -78,13 +82,16 @@ class AuthService:
                 headers={"WWW-Authenticate": "Bearer"},
             )
         
-        # Verify user still exists and is active
-        user = await conn.fetchrow(
-            "SELECT id, is_active FROM users WHERE id = $1 AND email = $2",
-            user_id, email
-        )
+        # Verify user still exists and is active using SQLAlchemy
+        from sqlalchemy import select
+        from models.database_models import User
         
-        if not user or not user["is_active"]:
+        result = await db.execute(
+            select(User).where(User.id == user_id, User.email == email)
+        )
+        user = result.scalar_one_or_none()
+        
+        if not user or not user.is_active:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="User not found or inactive",

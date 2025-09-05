@@ -1,11 +1,14 @@
+# routes/books.py
 import logging
 from typing import List, Literal, Optional
 from uuid import uuid4
 
-import asyncpg
+from sqlalchemy import select, update, delete, func
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from models.database import get_db
+from models.database_models import Book as BookModel
 from models.schemas import Book, BookResponse, BookUpdate, SuccessResponse
 from services.auth_service import auth_service, TokenData
 
@@ -21,44 +24,38 @@ router = APIRouter(tags=["Books"], prefix="/books")
 )
 async def create_book(
     book: Book, 
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Create a new book in the database"""
     book_id = uuid4().hex
 
     try:
-        await conn.execute(
-            "INSERT INTO books (book_id, name, genre, price) VALUES ($1, $2, $3, $4)",
-            book_id,
-            book.name,
-            book.genre,
-            book.price,
+        # Create book using SQLAlchemy
+        db_book = BookModel(
+            book_id=book_id,
+            name=book.name,
+            genre=book.genre,
+            price=book.price
         )
-
-        row = await conn.fetchrow(
-            "SELECT book_id, name, genre, price, created_at, updated_at FROM books WHERE book_id = $1",
-            book_id,
-        )
+        
+        db.add(db_book)
+        await db.commit()
+        await db.refresh(db_book)
 
         logger.info(f"Book created: {book_id} - {book.name}")
         return BookResponse(
-            book_id=row["book_id"],
-            name=row["name"],
-            genre=row["genre"],
-            price=float(row["price"]),
-            created_at=row["created_at"].isoformat(),
-            updated_at=row["updated_at"].isoformat(),
+            book_id=db_book.book_id,
+            name=db_book.name,
+            genre=db_book.genre,
+            price=float(db_book.price),
+            created_at=db_book.created_at.isoformat(),
+            updated_at=db_book.updated_at.isoformat(),
         )
 
-    except asyncpg.UniqueViolationError:
-        logger.warning(f"Book creation failed - duplicate ID: {book_id}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Book with this ID already exists",
-        )
     except Exception as e:
         logger.error(f"Book creation failed: {e}")
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create book",
@@ -73,35 +70,31 @@ async def list_books(
     genre: Optional[Literal["fiction", "non-fiction"]] = None,
     limit: int = 100,
     offset: int = 0,
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Get all books with optional filtering and pagination"""
     try:
+        query = select(BookModel)
+        
         if genre:
-            rows = await conn.fetch(
-                "SELECT book_id, name, genre, price, created_at, updated_at FROM books WHERE genre = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
-                genre,
-                limit,
-                offset,
-            )
-        else:
-            rows = await conn.fetch(
-                "SELECT book_id, name, genre, price, created_at, updated_at FROM books ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-                limit,
-                offset,
-            )
+            query = query.where(BookModel.genre == genre)
+            
+        query = query.order_by(BookModel.created_at.desc()).offset(offset).limit(limit)
+        
+        result = await db.execute(query)
+        books = result.scalars().all()
 
         return [
             BookResponse(
-                book_id=row["book_id"],
-                name=row["name"],
-                genre=row["genre"],
-                price=float(row["price"]),
-                created_at=row["created_at"].isoformat(),
-                updated_at=row["updated_at"].isoformat(),
+                book_id=book.book_id,
+                name=book.name,
+                genre=book.genre,
+                price=float(book.price),
+                created_at=book.created_at.isoformat(),
+                updated_at=book.updated_at.isoformat(),
             )
-            for row in rows
+            for book in books
         ]
 
     except Exception as e:
@@ -118,17 +111,17 @@ async def list_books(
 )
 async def get_book_by_id(
     book_id: str, 
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Get a specific book by ID"""
     try:
-        row = await conn.fetchrow(
-            "SELECT book_id, name, genre, price, created_at, updated_at FROM books WHERE book_id = $1",
-            book_id,
+        result = await db.execute(
+            select(BookModel).where(BookModel.book_id == book_id)
         )
+        book = result.scalar_one_or_none()
 
-        if not row:
+        if not book:
             logger.warning(f"Book not found: {book_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -136,12 +129,12 @@ async def get_book_by_id(
             )
 
         return BookResponse(
-            book_id=row["book_id"],
-            name=row["name"],
-            genre=row["genre"],
-            price=float(row["price"]),
-            created_at=row["created_at"].isoformat(),
-            updated_at=row["updated_at"].isoformat(),
+            book_id=book.book_id,
+            name=book.name,
+            genre=book.genre,
+            price=float(book.price),
+            created_at=book.created_at.isoformat(),
+            updated_at=book.updated_at.isoformat(),
         )
 
     except HTTPException:
@@ -161,66 +154,65 @@ async def get_book_by_id(
 async def update_book(
     book_id: str, 
     book_update: BookUpdate, 
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Update a specific book"""
     try:
-        existing = await conn.fetchrow(
-            "SELECT 1 FROM books WHERE book_id = $1", book_id
+        # First get the book
+        result = await db.execute(
+            select(BookModel).where(BookModel.book_id == book_id)
         )
-        if not existing:
+        book = result.scalar_one_or_none()
+        
+        if not book:
             logger.warning(f"Book not found for update: {book_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Book with id {book_id} not found",
             )
 
-        update_fields = []
-        values = []
-        param_count = 1
-
+        # Prepare update data
+        update_data = {}
         if book_update.name is not None:
-            update_fields.append(f"name = ${param_count}")
-            values.append(book_update.name)
-            param_count += 1
-
+            update_data["name"] = book_update.name
         if book_update.genre is not None:
-            update_fields.append(f"genre = ${param_count}")
-            values.append(book_update.genre)
-            param_count += 1
-
+            update_data["genre"] = book_update.genre
         if book_update.price is not None:
-            update_fields.append(f"price = ${param_count}")
-            values.append(book_update.price)
-            param_count += 1
+            update_data["price"] = book_update.price
 
-        if not update_fields:
+        if not update_data:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fields provided for update",
             )
 
-        values.append(book_id)
-
-        query = f"UPDATE books SET {', '.join(update_fields)} WHERE book_id = ${param_count} RETURNING book_id, name, genre, price, created_at, updated_at"
-
-        row = await conn.fetchrow(query, *values)
+        # Update the book
+        await db.execute(
+            update(BookModel)
+            .where(BookModel.book_id == book_id)
+            .values(**update_data)
+        )
+        await db.commit()
+        
+        # Refresh to get updated values
+        await db.refresh(book)
+        
         logger.info(f"Book updated: {book_id}")
-
         return BookResponse(
-            book_id=row["book_id"],
-            name=row["name"],
-            genre=row["genre"],
-            price=float(row["price"]),
-            created_at=row["created_at"].isoformat(),
-            updated_at=row["updated_at"].isoformat(),
+            book_id=book.book_id,
+            name=book.name,
+            genre=book.genre,
+            price=float(book.price),
+            created_at=book.created_at.isoformat(),
+            updated_at=book.updated_at.isoformat(),
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to update book {book_id}: {e}")
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to update book",
@@ -233,19 +225,25 @@ async def update_book(
 )
 async def delete_book(
     book_id: str, 
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Delete a specific book"""
     try:
-        result = await conn.execute("DELETE FROM books WHERE book_id = $1", book_id)
-
-        if result == "DELETE 0":
+        result = await db.execute(
+            select(BookModel).where(BookModel.book_id == book_id)
+        )
+        book = result.scalar_one_or_none()
+        
+        if not book:
             logger.warning(f"Book not found for deletion: {book_id}")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Book with id {book_id} not found",
             )
+
+        await db.delete(book)
+        await db.commit()
 
         logger.info(f"Book deleted: {book_id}")
         return SuccessResponse(
@@ -257,6 +255,7 @@ async def delete_book(
         raise
     except Exception as e:
         logger.error(f"Failed to delete book {book_id}: {e}")
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete book",
@@ -268,16 +267,17 @@ async def delete_book(
     summary="Get a random book",
 )
 async def get_random_book(
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Get a random book from the database"""
     try:
-        row = await conn.fetchrow(
-            "SELECT book_id, name, genre, price, created_at, updated_at FROM books ORDER BY RANDOM() LIMIT 1"
+        result = await db.execute(
+            select(BookModel).order_by(func.random()).limit(1)
         )
+        book = result.scalar_one_or_none()
 
-        if not row:
+        if not book:
             logger.warning("No books found for random selection")
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -285,12 +285,12 @@ async def get_random_book(
             )
 
         return BookResponse(
-            book_id=row["book_id"],
-            name=row["name"],
-            genre=row["genre"],
-            price=float(row["price"]),
-            created_at=row["created_at"].isoformat(),
-            updated_at=row["updated_at"].isoformat(),
+            book_id=book.book_id,
+            name=book.name,
+            genre=book.genre,
+            price=float(book.price),
+            created_at=book.created_at.isoformat(),
+            updated_at=book.updated_at.isoformat(),
         )
 
     except Exception as e:
@@ -306,29 +306,30 @@ async def get_random_book(
     summary="Get books statistics",
 )
 async def get_books_stats(
-    conn: asyncpg.Connection = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Get statistics about books in the database"""
     try:
-        stats = await conn.fetchrow("""
-            SELECT 
-                COUNT(*) as total_books,
-                COUNT(CASE WHEN genre = 'fiction' THEN 1 END) as fiction_count,
-                COUNT(CASE WHEN genre = 'non-fiction' THEN 1 END) as non_fiction_count,
-                AVG(price) as average_price,
-                MIN(price) as min_price,
-                MAX(price) as max_price
-            FROM books
-        """)
+        # Use SQLAlchemy's func for aggregation
+        total_books = await db.scalar(select(func.count(BookModel.book_id)))
+        fiction_count = await db.scalar(
+            select(func.count(BookModel.book_id)).where(BookModel.genre == 'fiction')
+        )
+        non_fiction_count = await db.scalar(
+            select(func.count(BookModel.book_id)).where(BookModel.genre == 'non-fiction')
+        )
+        avg_price = await db.scalar(select(func.avg(BookModel.price)))
+        min_price = await db.scalar(select(func.min(BookModel.price)))
+        max_price = await db.scalar(select(func.max(BookModel.price)))
 
         return {
-            "total_books": stats["total_books"],
-            "fiction_count": stats["fiction_count"],
-            "non_fiction_count": stats["non_fiction_count"],
-            "average_price": float(stats["average_price"]) if stats["average_price"] else 0,
-            "min_price": float(stats["min_price"]) if stats["min_price"] else 0,
-            "max_price": float(stats["max_price"]) if stats["max_price"] else 0,
+            "total_books": total_books or 0,
+            "fiction_count": fiction_count or 0,
+            "non_fiction_count": non_fiction_count or 0,
+            "average_price": float(avg_price) if avg_price else 0,
+            "min_price": float(min_price) if min_price else 0,
+            "max_price": float(max_price) if max_price else 0,
         }
 
     except Exception as e:

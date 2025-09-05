@@ -1,3 +1,4 @@
+# config.py
 """
 Configuration module for environment variables and application settings.
 """
@@ -27,6 +28,7 @@ DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgres://")
 ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
 DEBUG = ENVIRONMENT == "development"
 LOG_LEVEL = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL)
+VERSION = "2.0.0"
 
 # AWS S3 Configuration
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -47,3 +49,10 @@ ALLOWED_EXTENSIONS = {
     "video": ["mp4", "mov", "avi", "mkv"],
     "audio": ["mp3", "wav", "ogg"],
 }
+
+# SQLAlchemy configuration
+SQLALCHEMY_DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://")
+POOL_SIZE = 5
+MAX_OVERFLOW = 10
+POOL_TIMEOUT = 30
+POOL_RECYCLE = 1800
