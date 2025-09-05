@@ -10,14 +10,16 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from config import DEBUG, ENVIRONMENT
-from database import close_db, init_db
-from exceptions import (generic_exception_handler, http_exception_handler,
+from models.database import close_db, init_db
+from utils.exceptions import (generic_exception_handler, http_exception_handler,
                         validation_exception_handler)
-from middleware import add_process_time_header
+from middleware.process_time import add_process_time_header
 from routes.books import router as books_router
 from routes.files import router as files_router
 from routes.health import router as health_router
 from routes.root import router as root_router
+from routes.auth import router as auth_router
+from routes.users import router as users_router
 
 
 # --- Logging Configuration ---
@@ -241,45 +243,12 @@ async def get_db_or_fail():
             headers={"Retry-After": "30"}
         )
 
-# --- Health Check Endpoints ---
-@app.get("/health", include_in_schema=False)
-async def health_check():
-    """Comprehensive health check including database status."""
-    return {
-        "status": "healthy" if db_state.is_connected else "degraded",
-        "service": "bookstore-api",
-        "database": {
-            "connected": db_state.is_connected,
-            "error": db_state.initialization_error if not db_state.is_connected else None,
-            "retry_count": db_state.retry_count
-        },
-        "environment": ENVIRONMENT
-    }
-
-@app.get("/health/startup", include_in_schema=False)
-async def startup_health_check():
-    """Simple health check that doesn't depend on database."""
-    return {"status": "healthy", "service": "bookstore-api"}
-
-@app.get("/health/db", include_in_schema=False)
-async def database_health_check():
-    """Database-specific health check."""
-    if db_state.is_connected:
-        return {"status": "connected", "message": "Database is available"}
-    else:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "disconnected",
-                "message": "Database is not available",
-                "error": db_state.initialization_error,
-                "retry_count": db_state.retry_count
-            }
-        )
 
 # --- Include Routers ---
 app.include_router(root_router)
 app.include_router(health_router)
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(users_router, prefix="/api/v1", tags=["users"])
 app.include_router(books_router, prefix="/api/v1", tags=["books"])
 app.include_router(files_router, prefix="/api/v1", tags=["files"])
 
@@ -290,23 +259,6 @@ async def startup_event():
     logger.info(f"Starting Bookstore API in {ENVIRONMENT} environment")
     logger.info(f"Debug mode: {DEBUG}")
     logger.info(f"Documentation available: {ENVIRONMENT != 'production'}")
-
-# --- Manual Database Retry Endpoint (for development/debugging) ---
-@app.post("/admin/retry-db", include_in_schema=False)
-async def retry_database_connection():
-    """Manually retry database connection (useful for debugging)."""
-    if ENVIRONMENT == "production":
-        raise HTTPException(status_code=404, detail="Not found")
-    
-    logger.info("Manual database retry requested")
-    db_initialized = await safe_init_db()
-    
-    return {
-        "success": db_initialized,
-        "connected": db_state.is_connected,
-        "error": db_state.initialization_error,
-        "retry_count": db_state.retry_count
-    }
 
 # --- AWS Lambda Handler ---
 handler = Mangum(app, lifespan="off")  # Disable lifespan for Lambda
@@ -344,4 +296,4 @@ if __name__ == "__main__":
         log_config=log_config if not DEBUG else None,
         access_log=True,
         reload_dirs=["./"] if DEBUG else None,
-    )    
+    )

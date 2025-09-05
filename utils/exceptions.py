@@ -1,4 +1,3 @@
-
 import logging
 
 from fastapi import HTTPException, Request
@@ -6,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from schemas import ErrorResponse
+from models.schemas import ErrorResponse
 
 logger = logging.getLogger(__name__)
 

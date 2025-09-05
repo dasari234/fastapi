@@ -5,8 +5,9 @@ from uuid import uuid4
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from database import get_db
-from schemas import Book, BookResponse, BookUpdate, SuccessResponse
+from models.database import get_db
+from models.schemas import Book, BookResponse, BookUpdate, SuccessResponse
+from services.auth_service import auth_service, TokenData
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,11 @@ router = APIRouter(tags=["Books"], prefix="/books")
     status_code=status.HTTP_201_CREATED,
     summary="Create a new book",
 )
-async def create_book(book: Book, conn: asyncpg.Connection = Depends(get_db)):
+async def create_book(
+    book: Book, 
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Create a new book in the database"""
     book_id = uuid4().hex
 
@@ -69,6 +74,7 @@ async def list_books(
     limit: int = 100,
     offset: int = 0,
     conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Get all books with optional filtering and pagination"""
     try:
@@ -110,7 +116,11 @@ async def list_books(
     response_model=BookResponse,
     summary="Get a book by ID",
 )
-async def get_book_by_id(book_id: str, conn: asyncpg.Connection = Depends(get_db)):
+async def get_book_by_id(
+    book_id: str, 
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Get a specific book by ID"""
     try:
         row = await conn.fetchrow(
@@ -149,7 +159,10 @@ async def get_book_by_id(book_id: str, conn: asyncpg.Connection = Depends(get_db
     summary="Update a book",
 )
 async def update_book(
-    book_id: str, book_update: BookUpdate, conn: asyncpg.Connection = Depends(get_db)
+    book_id: str, 
+    book_update: BookUpdate, 
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Update a specific book"""
     try:
@@ -218,7 +231,11 @@ async def update_book(
     response_model=SuccessResponse,
     summary="Delete a book",
 )
-async def delete_book(book_id: str, conn: asyncpg.Connection = Depends(get_db)):
+async def delete_book(
+    book_id: str, 
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Delete a specific book"""
     try:
         result = await conn.execute("DELETE FROM books WHERE book_id = $1", book_id)
@@ -250,7 +267,10 @@ async def delete_book(book_id: str, conn: asyncpg.Connection = Depends(get_db)):
     response_model=BookResponse,
     summary="Get a random book",
 )
-async def get_random_book(conn: asyncpg.Connection = Depends(get_db)):
+async def get_random_book(
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Get a random book from the database"""
     try:
         row = await conn.fetchrow(
@@ -285,7 +305,10 @@ async def get_random_book(conn: asyncpg.Connection = Depends(get_db)):
     response_model=dict,
     summary="Get books statistics",
 )
-async def get_books_stats(conn: asyncpg.Connection = Depends(get_db)):
+async def get_books_stats(
+    conn: asyncpg.Connection = Depends(get_db),
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Get statistics about books in the database"""
     try:
         stats = await conn.fetchrow("""
@@ -314,6 +337,3 @@ async def get_books_stats(conn: asyncpg.Connection = Depends(get_db)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to fetch statistics",
         )
-
-
-

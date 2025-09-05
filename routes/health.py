@@ -1,15 +1,13 @@
 import logging
 import time
-
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from config import ENVIRONMENT
-from database import get_db
-from schemas import HealthResponse
+from models.database import get_db
+from models.schemas import HealthResponse
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(tags=["Health"])
 
 @router.get(
@@ -41,3 +39,23 @@ async def health_check(conn: asyncpg.Connection = Depends(get_db)):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database health check failed",
         )
+
+@router.get("/health/startup", include_in_schema=False)
+async def startup_health_check():
+    """Simple health check that doesn't depend on database."""
+    return {"status": "healthy", "service": "bookstore-api"}
+
+@router.get("/health/db", include_in_schema=False)
+async def database_health_check():
+    """Database-specific health check."""
+    from models.database import db_pool, health_checker
+    
+    if db_pool and await health_checker.check_health(db_pool):
+        return {"status": "connected", "message": "Database is available"}
+    else:
+        return {
+            "status": "disconnected",
+            "message": "Database is not available",
+            "error": "Database connection failed"
+        }
+        

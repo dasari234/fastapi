@@ -10,10 +10,11 @@ from fastapi import (APIRouter, File, Form, HTTPException, Query, Request,
 from fastapi.concurrency import run_in_threadpool
 
 from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
-from s3_service import s3_service
-from schemas import (DeleteFileResponse, FileUploadListResponse,
+from services.s3_service import s3_service
+from models.schemas import (DeleteFileResponse, FileUploadListResponse,
                      MultipleFileUploadResponse, UploadedFileInfo, UploadError)
-from uploads_service import uploads_service
+from services.uploads_service import uploads_service
+from services.auth_service import auth_service, TokenData
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
@@ -234,6 +235,7 @@ async def upload_file(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string"
     ),
+    current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Upload a single file to AWS S3 bucket and store record in PostgreSQL"""
     try:
@@ -268,7 +270,7 @@ async def upload_file(
             file_content=text_content,
             score=score,
             folder_path=folder,
-            user_id=user_id,
+            user_id=str(current_user.user_id),  # Use authenticated user's ID
             metadata=upload_metadata,
             upload_ip=client_ip,
         )
@@ -320,6 +322,7 @@ async def upload_multiple_files(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string for all files"
     ),
+    current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Upload multiple files to AWS S3 bucket and store records in PostgreSQL"""
     if not files:
@@ -378,7 +381,7 @@ async def upload_multiple_files(
                     file_content=text_content,
                     score=score,
                     folder_path=folder,
-                    user_id=user_id,
+                    user_id=str(current_user.user_id),  # Use authenticated user's ID
                     metadata=upload_metadata,
                     upload_ip=client_ip,
                 )
@@ -449,9 +452,14 @@ async def list_upload_records(
     folder: Optional[str] = Query(None, description="Filter by folder"),
     limit: int = Query(100, ge=1, le=1000, description="Number of records per page"),
     page: int = Query(1, ge=1, description="Page number"),
+    current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """List file upload records from PostgreSQL database with pagination"""
     try:
+        # Non-admin users can only see their own files
+        if current_user.role != "admin":
+            user_id = str(current_user.user_id)
+            
         offset = (page - 1) * limit
         result = await uploads_service.list_uploads(user_id, folder, limit, offset)
 
@@ -473,7 +481,10 @@ async def list_upload_records(
         )
 
 @router.delete("/{s3_key:path}", response_model=DeleteFileResponse)
-async def delete_upload_record(s3_key: str):
+async def delete_upload_record(
+    s3_key: str,
+    current_user: TokenData = Depends(auth_service.get_current_user)
+):
     """Delete file upload record from PostgreSQL database and S3"""
     if not s3_key or s3_key.strip() == "":
         raise HTTPException(
@@ -488,6 +499,13 @@ async def delete_upload_record(s3_key: str):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Record not found in database"
+            )
+
+        # Check if user has permission to delete (admin or owner)
+        if current_user.role != "admin" and record.get("user_id") != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only delete your own files"
             )
 
         # Delete from S3

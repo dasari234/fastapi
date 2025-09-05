@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from config import ENVIRONMENT
-from schemas import SuccessResponse
+from models.schemas import SuccessResponse
 
 router = APIRouter(tags=["Root"])
 

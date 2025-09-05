@@ -1,10 +1,9 @@
-
 """
 Configuration module for environment variables and application settings.
 """
 
 import os
-
+import secrets
 from dotenv import load_dotenv
 
 # Constants
@@ -12,7 +11,7 @@ DEFAULT_ENVIRONMENT = "production"
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_AWS_REGION = "us-east-1"
 MAX_FILE_SIZE_MB = 100
-MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024 
+MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
 
 # Load environment variables from .env file
 load_dotenv()
@@ -34,6 +33,12 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", DEFAULT_AWS_REGION)
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+
+# JWT Configuration
+SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_urlsafe(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
 # File upload settings
 ALLOWED_EXTENSIONS = {
