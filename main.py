@@ -10,7 +10,8 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 
 from config import DEBUG, ENVIRONMENT
-from database import close_db, init_db
+from database import (add_versioning_columns, close_db, ensure_db_initialized,
+                      init_db)
 from exceptions import (generic_exception_handler, http_exception_handler,
                         validation_exception_handler)
 from middleware import add_process_time_header
@@ -290,6 +291,15 @@ async def startup_event():
     logger.info(f"Starting Bookstore API in {ENVIRONMENT} environment")
     logger.info(f"Debug mode: {DEBUG}")
     logger.info(f"Documentation available: {ENVIRONMENT != 'production'}")
+    try:
+        # Initialize database
+        await ensure_db_initialized()
+        
+        # Run migrations
+        await add_versioning_columns()
+        
+    except Exception as e:
+        logging.error(f"Startup error: {e}")
 
 # --- Manual Database Retry Endpoint (for development/debugging) ---
 @app.post("/admin/retry-db", include_in_schema=False)

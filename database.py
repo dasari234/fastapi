@@ -97,24 +97,197 @@ async def get_database_url_info() -> str:
     except Exception:
         return "Unknown host"
 
+async def init_db_without_table_check(force_recreate: bool = False) -> asyncpg.Pool:
+    """Initialize DB connection pool without table checks to avoid recursion"""
+    global db_pool, _initialization_in_progress
+    
+    async with _pool_lock:
+        if db_pool and not force_recreate:
+            return db_pool
+        
+        if _initialization_in_progress:
+            while _initialization_in_progress:
+                await asyncio.sleep(0.1)
+            if db_pool:
+                return db_pool
+        
+        _initialization_in_progress = True
+        
+        try:
+            db_info = await get_database_url_info()
+            logger.info(f"Initializing DB connection pool to: {db_info}")
+            
+            ssl_mode = "require"
+            if "localhost" in DATABASE_URL or "127.0.0.1" in DATABASE_URL:
+                ssl_mode = "prefer"
+            
+            pool_config = DatabaseConfig.get_pool_settings()
+            pool_config["ssl"] = ssl_mode
+            
+            db_pool = await asyncpg.create_pool(DATABASE_URL, **pool_config)
+            
+            # Test the connection but skip table creation to avoid recursion
+            async with db_pool.acquire(timeout=10) as conn:
+                await conn.fetchval("SELECT version()")
+            
+            # Initial health check
+            await health_checker.check_health(db_pool)
+            
+            logger.info("Database pool initialized successfully")
+            return db_pool
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize database pool: {e}")
+            if db_pool:
+                return db_pool
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Database initialization failed: {str(e)}"
+            )
+        finally:
+            _initialization_in_progress = False
+            
+async def check_table_exists(table_name: str, conn: asyncpg.Connection = None) -> bool:
+    """Check if a specific table exists without causing recursion"""
+    try:
+        if conn:
+            # Use provided connection
+            exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = $1
+                )
+            """, table_name)
+            return exists
+        else:
+            # Get new connection without recursion
+            pool = db_pool
+            if pool is None:
+                # Initialize without checking tables to avoid recursion
+                pool = await init_db_without_table_check()
+            async with pool.acquire() as temp_conn:
+                exists = await temp_conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables 
+                        WHERE table_schema = 'public' AND table_name = $1
+                    )
+                """, table_name)
+                return exists
+    except Exception as e:
+        logger.error(f"Error checking if table {table_name} exists: {e}")
+        return False
+
+async def emergency_create_missing_tables() -> Dict[str, bool]:
+    """Emergency function to create missing tables"""
+    try:
+        pool = await init_db_without_table_check()
+        async with pool.acquire() as conn:
+            return await emergency_create_missing_tables_direct(conn)
+    except Exception as e:
+        logger.error(f"Emergency table creation failed: {e}")
+        return {"error": str(e), "file_uploads_created": False}
+    
 async def create_database_tables(conn: asyncpg.Connection) -> None:
     """Create all required database tables and indexes"""
     try:
         logger.info("Creating database tables and indexes...")
         
-        # Create books table
+        # Check if BOTH tables exist (more specific check)
+        books_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = 'books'
+            )
+        """)
+        
+        file_uploads_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = 'file_uploads'
+            )
+        """)
+        
+        if books_exists and file_uploads_exists:
+            logger.info("Both tables already exist, skipping creation")
+            return
+        
+        logger.info(f"Books exists: {books_exists}, File_uploads exists: {file_uploads_exists}")
+        
+        # Create books table if it doesn't exist
+        if not books_exists:
+            await conn.execute("""
+                CREATE TABLE books (
+                    book_id VARCHAR(32) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    genre VARCHAR(20) NOT NULL CHECK (genre IN ('fiction', 'non-fiction')),
+                    price DECIMAL(10, 2) NOT NULL CHECK (price > 0),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            logger.info("Books table created")
+            
+        
         await conn.execute("""
-            CREATE TABLE IF NOT EXISTS books (
-                book_id VARCHAR(32) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                genre VARCHAR(20) NOT NULL CHECK (genre IN ('fiction', 'non-fiction')),
-                price DECIMAL(10, 2) NOT NULL CHECK (price > 0),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            CREATE TABLE IF NOT EXISTS file_history (
+                id SERIAL PRIMARY KEY,
+                file_upload_id INTEGER NOT NULL REFERENCES file_uploads(id) ON DELETE CASCADE,
+                original_filename VARCHAR(255) NOT NULL,
+                s3_key VARCHAR(500) NOT NULL,
+                s3_url VARCHAR(1000) NOT NULL,
+                file_size BIGINT NOT NULL,
+                content_type VARCHAR(100) NOT NULL,
+                file_content TEXT,
+                score DECIMAL(5,2) DEFAULT 0.0,
+                folder_path VARCHAR(255),
+                user_id VARCHAR(100),
+                metadata JSONB,
+                upload_ip VARCHAR(45),
+                version INTEGER NOT NULL,
+                version_comment TEXT,
+                archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                -- Indexes for better performance
+                INDEX idx_file_history_filename (original_filename),
+                INDEX idx_file_history_user_id (user_id),
+                INDEX idx_file_history_version (version)
             );
         """)
 
-        # Create books indexes
+        # Create file_uploads table if it doesn't exist
+        if not file_uploads_exists:
+            await conn.execute("""
+                CREATE TABLE file_uploads (
+                    id SERIAL PRIMARY KEY,
+                    original_filename VARCHAR(255) NOT NULL,
+                    s3_key VARCHAR(500) NOT NULL UNIQUE,
+                    s3_url VARCHAR(1000) NOT NULL,
+                    file_size BIGINT NOT NULL CHECK (file_size >= 0),
+                    content_type VARCHAR(100) NOT NULL,
+                    folder_path VARCHAR(255),
+                    file_content TEXT,
+                    score DECIMAL(5,2) DEFAULT 0.0 CHECK (score >= 0 AND score <= 100),
+                    upload_status VARCHAR(20) DEFAULT 'success' CHECK (upload_status IN ('success', 'failed', 'processing', 'error')),
+                    error_message TEXT,
+                    user_id VARCHAR(100),
+                    metadata JSONB,
+                    upload_ip VARCHAR(45),
+                    -- Versioning columns
+                    version INTEGER DEFAULT 1 CHECK (version >= 1),
+                    is_current_version BOOLEAN DEFAULT TRUE,
+                    previous_version_id INTEGER REFERENCES file_uploads(id),
+                    version_comment TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    
+                    CONSTRAINT check_filename_clean CHECK (original_filename !~ '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]'),
+                    CONSTRAINT check_no_empty_filename CHECK (LENGTH(TRIM(original_filename)) > 0),
+                    CONSTRAINT check_s3_key_format CHECK (s3_key ~ '^[a-zA-Z0-9._/-]+$')
+                );
+            """)
+            logger.info("File_uploads table created")
+
+        # Create indexes (these will be created if they don't exist)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_books_genre ON books(genre);
             CREATE INDEX IF NOT EXISTS idx_books_price ON books(price);
@@ -132,40 +305,13 @@ async def create_database_tables(conn: asyncpg.Connection) -> None:
             $$ language 'plpgsql';
         """)
         
-        # Create trigger for books table
+        # Create triggers
         await conn.execute("""
             DROP TRIGGER IF EXISTS update_books_updated_at ON books;
             CREATE TRIGGER update_books_updated_at
                 BEFORE UPDATE ON books
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
-        """)
-        
-        # Create file_uploads table with improved constraints
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS file_uploads (
-                id SERIAL PRIMARY KEY,
-                original_filename VARCHAR(255) NOT NULL,
-                s3_key VARCHAR(500) NOT NULL UNIQUE,
-                s3_url VARCHAR(1000) NOT NULL,
-                file_size BIGINT NOT NULL CHECK (file_size >= 0),
-                content_type VARCHAR(100) NOT NULL,
-                folder_path VARCHAR(255),
-                file_content TEXT,
-                score DECIMAL(5,2) DEFAULT 0.0 CHECK (score >= 0 AND score <= 100),
-                upload_status VARCHAR(20) DEFAULT 'success' CHECK (upload_status IN ('success', 'failed', 'processing', 'error')),
-                error_message TEXT,
-                user_id VARCHAR(100),
-                metadata JSONB,
-                upload_ip VARCHAR(45),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Add constraint to prevent null bytes and control characters
-                CONSTRAINT check_filename_clean CHECK (original_filename !~ '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]'),
-                CONSTRAINT check_no_empty_filename CHECK (LENGTH(TRIM(original_filename)) > 0),
-                CONSTRAINT check_s3_key_format CHECK (s3_key ~ '^[a-zA-Z0-9._/-]+$')
-            );
         """)
         
         # Create indexes for file_uploads table
@@ -177,6 +323,8 @@ async def create_database_tables(conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_file_uploads_status ON file_uploads(upload_status);
             CREATE INDEX IF NOT EXISTS idx_file_uploads_size ON file_uploads(file_size);
             CREATE INDEX IF NOT EXISTS idx_file_uploads_content_type ON file_uploads(content_type);
+            CREATE INDEX IF NOT EXISTS idx_file_uploads_version ON file_uploads(original_filename, version);
+            CREATE INDEX IF NOT EXISTS idx_file_uploads_current_version ON file_uploads(is_current_version);
         """)
         
         # Create trigger for file_uploads table
@@ -208,7 +356,53 @@ async def create_database_tables(conn: asyncpg.Connection) -> None:
         
     except Exception as e:
         logger.error(f"Failed to create database tables: {e}")
-        raise
+
+
+async def add_versioning_columns() -> bool:
+    """Add versioning columns to file_uploads table"""
+    migration_sql = """
+    -- Add versioning columns to file_uploads table
+    ALTER TABLE file_uploads 
+    ADD COLUMN IF NOT EXISTS version INTEGER DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS is_current_version BOOLEAN DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS previous_version_id INTEGER REFERENCES file_uploads(id),
+    ADD COLUMN IF NOT EXISTS version_comment TEXT;
+
+    -- Create index for better performance
+    CREATE INDEX IF NOT EXISTS idx_file_uploads_version ON file_uploads(original_filename, version);
+    CREATE INDEX IF NOT EXISTS idx_file_uploads_current_version ON file_uploads(is_current_version);
+    
+    -- Update existing records to have version 1 and be current
+    UPDATE file_uploads SET version = 1, is_current_version = TRUE 
+    WHERE version IS NULL OR is_current_version IS NULL;
+    """
+    
+    return await run_database_migration(
+        migration_sql, 
+        "Add versioning columns to file_uploads table"
+    )
+
+async def force_recreate_tables() -> Dict[str, bool]:
+    """Force recreation of all tables (DANGEROUS - will lose data!)"""
+    try:
+        pool = await ensure_db_initialized()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Drop tables if they exist
+                await conn.execute("""
+                    DROP TABLE IF EXISTS file_uploads CASCADE;
+                    DROP TABLE IF EXISTS books CASCADE;
+                    DROP VIEW IF EXISTS upload_stats;
+                """)
+                
+                # Recreate tables
+                await create_database_tables(conn)
+                
+                return {"success": True, "message": "Tables force-recreated"}
+                
+    except Exception as e:
+        logger.error(f"Force recreate tables failed: {e}")
+        return {"success": False, "error": str(e)}
 
 async def init_db(force_recreate: bool = False) -> asyncpg.Pool:
     """Initialize DB connection pool and create tables"""
@@ -363,6 +557,73 @@ async def get_db():
         detail="Database connection unavailable",
     )
 
+async def emergency_create_missing_tables_direct(conn: asyncpg.Connection) -> Dict[str, bool]:
+    """Emergency function to create missing tables using provided connection"""
+    try:
+        # Check if file_uploads table exists
+        file_uploads_exists = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables 
+                WHERE table_schema = 'public' AND table_name = 'file_uploads'
+            )
+        """)
+        
+        if not file_uploads_exists:
+            logger.warning("file_uploads table missing, creating emergency table...")
+            
+            # Create basic file_uploads table without constraints first
+            await conn.execute("""
+                CREATE TABLE file_uploads (
+                    id SERIAL PRIMARY KEY,
+                    original_filename VARCHAR(255),
+                    s3_key VARCHAR(500),
+                    s3_url VARCHAR(1000),
+                    file_size BIGINT,
+                    content_type VARCHAR(100),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # Add other columns gradually
+            await conn.execute("""
+                ALTER TABLE file_uploads 
+                ADD COLUMN folder_path VARCHAR(255),
+                ADD COLUMN file_content TEXT,
+                ADD COLUMN score DECIMAL(5,2) DEFAULT 0.0,
+                ADD COLUMN upload_status VARCHAR(20) DEFAULT 'success',
+                ADD COLUMN error_message TEXT,
+                ADD COLUMN user_id VARCHAR(100),
+                ADD COLUMN metadata JSONB,
+                ADD COLUMN upload_ip VARCHAR(45),
+                ADD COLUMN version INTEGER DEFAULT 1,
+                ADD COLUMN is_current_version BOOLEAN DEFAULT TRUE,
+                ADD COLUMN previous_version_id INTEGER,
+                ADD COLUMN version_comment TEXT;
+            """)
+            
+            # Add constraints later
+            await conn.execute("""
+                ALTER TABLE file_uploads 
+                ALTER COLUMN original_filename SET NOT NULL,
+                ALTER COLUMN s3_key SET NOT NULL,
+                ALTER COLUMN s3_url SET NOT NULL,
+                ALTER COLUMN file_size SET NOT NULL,
+                ALTER COLUMN content_type SET NOT NULL;
+                
+                ALTER TABLE file_uploads ADD CONSTRAINT file_uploads_s3_key_unique UNIQUE (s3_key);
+            """)
+            
+            logger.info("Emergency file_uploads table created successfully")
+            return {"file_uploads_created": True}
+        else:
+            logger.info("file_uploads table already exists")
+            return {"file_uploads_created": False}
+            
+    except Exception as e:
+        logger.error(f"Emergency table creation failed: {e}")
+        return {"error": str(e), "file_uploads_created": False}
+
 async def ensure_db_initialized() -> asyncpg.Pool:
     """Ensure database is initialized before operations"""
     global db_pool
@@ -373,6 +634,24 @@ async def ensure_db_initialized() -> asyncpg.Pool:
     elif not await health_checker.check_health(db_pool):
         logger.warning("Database pool is unhealthy. Reinitializing...")
         await init_db(force_recreate=True)
+    
+    # Check if file_uploads table exists using a direct connection to avoid recursion
+    try:
+        async with db_pool.acquire() as conn:
+            file_uploads_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = 'file_uploads'
+                )
+            """)
+            
+            if not file_uploads_exists:
+                logger.warning("file_uploads table missing after initialization, creating emergency tables...")
+                # Use direct connection for emergency creation
+                await emergency_create_missing_tables_direct(conn)
+    
+    except Exception as e:
+        logger.error(f"Error checking table existence in ensure_db_initialized: {e}")
     
     return db_pool
 
@@ -431,6 +710,22 @@ async def run_database_migration(migration_sql: str, description: str = "Migrati
     except Exception as e:
         logger.error(f"Database migration failed: {description} - {e}")
         return False
+
+async def check_tables_exist() -> Dict[str, bool]:
+    """Check if required tables exist in the database"""
+    try:
+        books_exists = await check_table_exists("books")
+        file_uploads_exists = await check_table_exists("file_uploads")
+        
+        return {
+            'books': books_exists,
+            'file_uploads': file_uploads_exists,
+            'all_tables_exist': books_exists and file_uploads_exists
+        }
+            
+    except Exception as e:
+        logger.error(f"Error checking tables: {e}")
+        return {'error': str(e)}
 
 # Cleanup function for graceful shutdown
 async def cleanup_database():

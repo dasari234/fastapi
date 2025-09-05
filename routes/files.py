@@ -5,14 +5,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chardet
-from fastapi import (APIRouter, File, Form, HTTPException, Query, Request,
-                     UploadFile, status)
+from fastapi import (APIRouter, Body, File, Form, HTTPException, Query,
+                     Request, UploadFile, status)
 from fastapi.concurrency import run_in_threadpool
 
 from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 from s3_service import s3_service
 from schemas import (DeleteFileResponse, FileUploadListResponse,
-                     MultipleFileUploadResponse, UploadedFileInfo, UploadError)
+                     MultipleFileUploadResponse, SuccessResponse,
+                     UploadedFileInfo, UploadError)
 from uploads_service import uploads_service
 
 logger = logging.getLogger(__name__)
@@ -234,8 +235,12 @@ async def upload_file(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string"
     ),
+    version_comment: Optional[str] = Form(
+        None, description="Comment for this version"
+    ),
+    make_current: bool = Form(True, description="Make this the current version"),
 ):
-    """Upload a single file to AWS S3 bucket and store record in PostgreSQL"""
+    """Upload a file with versioning support"""
     try:
         # Validate file
         FileValidator.validate_file_basic(file)
@@ -271,12 +276,14 @@ async def upload_file(
             user_id=user_id,
             metadata=upload_metadata,
             upload_ip=client_ip,
+            version_comment=version_comment,
+            make_current=make_current,
         )
 
         logger.info(
             f"File uploaded successfully: {result['s3_key']}, "
-            f"DB ID: {db_record['id'] if db_record else 'N/A'}, "
-            f"Score: {score}, Size: {result['file_size']} bytes"
+            f"Version: {db_record['version'] if db_record else 'N/A'}, "
+            f"DB ID: {db_record['id'] if db_record else 'N/A'}"
         )
 
         return MultipleFileUploadResponse(
@@ -292,7 +299,7 @@ async def upload_file(
             total_uploaded=1,
             total_failed=0,
             errors=None,
-            message="File uploaded and recorded successfully",
+            message=f"File uploaded successfully as version {db_record['version'] if db_record else 'N/A'}",
         )
 
     except HTTPException:
@@ -320,6 +327,10 @@ async def upload_multiple_files(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string for all files"
     ),
+    version_comment: Optional[str] = Form(
+        None, description="Comment for this version"
+    ),
+    make_current: bool = Form(True, description="Make this the current version"),
 ):
     """Upload multiple files to AWS S3 bucket and store records in PostgreSQL"""
     if not files:
@@ -381,6 +392,8 @@ async def upload_multiple_files(
                     user_id=user_id,
                     metadata=upload_metadata,
                     upload_ip=client_ip,
+                    version_comment=version_comment,
+                    make_current=make_current,
                 )
 
                 uploaded_files.append(
@@ -442,18 +455,36 @@ async def upload_multiple_files(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=f"Multiple upload failed: {str(e)}"
         )
-
+  
 @router.get("", response_model=FileUploadListResponse)
 async def list_upload_records(
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
     folder: Optional[str] = Query(None, description="Filter by folder"),
+    show_all_versions: bool = Query(False, description="Show all versions or only current"),
     limit: int = Query(100, ge=1, le=1000, description="Number of records per page"),
     page: int = Query(1, ge=1, description="Page number"),
 ):
-    """List file upload records from PostgreSQL database with pagination"""
+    """List file upload records with versioning support"""
     try:
         offset = (page - 1) * limit
-        result = await uploads_service.list_uploads(user_id, folder, limit, offset)
+
+        if show_all_versions:
+            # Get all versions
+            result = await uploads_service.list_all_versions(
+                user_id=user_id, 
+                folder=folder, 
+                limit=limit, 
+                offset=offset
+            )
+        else:
+            # Get only current versions
+           result = await uploads_service.list_uploads(
+                user_id=user_id, 
+                folder=folder, 
+                limit=limit, 
+                offset=offset,
+                only_current=True  # Explicitly show only current versions
+            )
 
         total_pages = max(1, (result["total_count"] + limit - 1) // limit)
 
@@ -520,4 +551,70 @@ async def delete_upload_record(s3_key: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=f"Delete operation failed: {str(e)}"
+        )
+        
+@router.get("/{filename}/history", response_model=FileUploadListResponse)
+async def get_file_history(
+    filename: str,
+    user_id: Optional[str] = Query(None, description="Filter by user ID"),
+    folder: Optional[str] = Query(None, description="Filter by folder"),
+    limit: int = Query(50, ge=1, le=100, description="Number of history records per page"),
+    page: int = Query(1, ge=1, description="Page number"),
+):
+    """Get version history for a specific file"""
+    try:
+        offset = (page - 1) * limit
+        result = await uploads_service.get_file_history(
+            original_filename=filename,
+            user_id=user_id,
+            folder=folder,
+            limit=limit,
+            offset=offset
+        )
+
+        total_pages = max(1, (result["total_count"] + limit - 1) // limit)
+
+        return FileUploadListResponse(
+            data=result["history_records"],
+            total_count=result["total_count"],
+            page=page,
+            limit=limit,
+            total_pages=total_pages,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get file history: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Failed to retrieve file history: {str(e)}"
+        )
+
+@router.post("/history/{history_id}/revert", response_model=SuccessResponse)
+async def revert_file_version(
+    history_id: int,
+    version_comment: Optional[str] = Body(None, description="Comment for the revert operation")
+):
+    """Revert to a specific historical version of a file"""
+    try:
+        result = await uploads_service.revert_to_version(history_id, version_comment)
+        
+        if result:
+            return SuccessResponse(
+                message=f"Successfully reverted to historical version {history_id}",
+                status_code=200,
+                data=result
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Historical version {history_id} not found"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to revert version: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Failed to revert version: {str(e)}"
         )

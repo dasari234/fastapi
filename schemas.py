@@ -87,13 +87,17 @@ class FileUploadRecord(BaseModel):
     s3_url: str
     file_size: int
     content_type: str
-    file_content: Optional[str] = None  # NEW
-    score: Optional[float] = 0.0  # NEW
+    file_content: Optional[str] = None
+    score: Optional[float] = 0.0
     folder_path: Optional[str] = None
     user_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     upload_ip: Optional[str] = None
     upload_status: str = "success"
+    version: int = Field(1, ge=1, description="File version number")
+    is_current_version: bool = Field(True, description="Whether this is the current version")
+    previous_version_id: Optional[int] = Field(None, description="ID of previous version")
+    version_comment: Optional[str] = Field(None, description="Comment for this version")
     created_at: str
     updated_at: str
 
@@ -108,3 +112,68 @@ class DeleteFileResponse(BaseModel):
     message: str
     deleted_key: str
     success: bool
+    
+class FileVersionHistory(BaseModel):
+    current_version: FileUploadRecord
+    previous_versions: List[FileUploadRecord]
+    total_versions: int
+
+class VersionUploadRequest(BaseModel):
+    version_comment: Optional[str] = Field(None, description="Comment for this new version")
+    make_current: bool = Field(True, description="Make this the current version")
+    
+class FileHistoryRecord(BaseModel):
+    id: int
+    file_upload_id: int
+    original_filename: str
+    s3_key: str
+    s3_url: str
+    file_size: int
+    content_type: str
+    file_content: Optional[str] = None
+    score: Optional[float] = 0.0
+    folder_path: Optional[str] = None
+    user_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    upload_ip: Optional[str] = None
+    version: int
+    version_comment: Optional[str] = None
+    archived_at: str
+    current_file_status: Optional[bool] = None
+
+class FileHistoryResponse(BaseModel):
+    history_records: List[FileHistoryRecord]
+    total_count: int
+    current_version: Optional[FileUploadRecord] = None
+
+class RevertResponse(BaseModel):
+    message: str
+    reverted_version: FileUploadRecord
+    previous_version: Optional[FileHistoryRecord] = None
+    
+class CombinedFileRecord(BaseModel):
+    # Common fields
+    id: Optional[int] = None
+    file_upload_id: Optional[int] = None
+    original_filename: str
+    s3_key: str
+    s3_url: str
+    file_size: int
+    content_type: str
+    file_content: Optional[str] = None
+    score: Optional[float] = 0.0
+    folder_path: Optional[str] = None
+    user_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    upload_ip: Optional[str] = None
+    version: int
+    version_comment: Optional[str] = None
+    
+    # Type-specific fields
+    record_type: Literal["current", "history"]  # Indicates if it's current or historical
+    is_current_version: Optional[bool] = None
+    previous_version_id: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    archived_at: Optional[str] = None
+    current_file_status: Optional[bool] = None  # For history records
