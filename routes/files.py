@@ -5,16 +5,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chardet
-from fastapi import (APIRouter, File, Form, HTTPException, Query, Request,
-                     UploadFile, status)
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     Request, UploadFile, status)
 from fastapi.concurrency import run_in_threadpool
 
 from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
-from services.s3_service import s3_service
 from models.schemas import (DeleteFileResponse, FileUploadListResponse,
-                     MultipleFileUploadResponse, UploadedFileInfo, UploadError)
+                            MultipleFileUploadResponse, UploadedFileInfo,
+                            UploadError)
+from services.auth_service import TokenData, auth_service
+from services.s3_service import s3_service
 from services.uploads_service import uploads_service
-from services.auth_service import auth_service, TokenData
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
@@ -381,7 +382,7 @@ async def upload_multiple_files(
                     file_content=text_content,
                     score=score,
                     folder_path=folder,
-                    user_id=str(current_user.user_id),  # Use authenticated user's ID
+                    user_id=str(current_user.user_id),
                     metadata=upload_metadata,
                     upload_ip=client_ip,
                 )

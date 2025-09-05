@@ -1,11 +1,13 @@
 import logging
 import time
-from fastapi import APIRouter, Depends, HTTPException, status
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
 
 from config import ENVIRONMENT
 from models.database import get_db
 from models.schemas import HealthResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Health"])
@@ -20,12 +22,12 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     start_time = time.time()
     try:
         # Test database connection
-        await db.execute("SELECT 1")
-        
+        await db.execute(text("SELECT 1"))
+
         # Get database info
-        version_info = await db.scalar("SELECT version()")
-        db_name = await db.scalar("SELECT current_database()")
-        
+        version_info = await db.scalar(text("SELECT version()"))
+        db_name = await db.scalar(text("SELECT current_database()"))
+
         response_time = (time.time() - start_time) * 1000
 
         return HealthResponse(
@@ -50,21 +52,24 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             response_time_ms=response_time,
         )
 
+
 @router.get("/health/startup", include_in_schema=False)
 async def startup_health_check():
     """Simple health check that doesn't depend on database."""
     return {"status": "healthy", "service": "bookstore-api"}
 
+
 @router.get("/health/db", include_in_schema=False)
-async def database_health_check():
+async def database_health_check(db: AsyncSession = Depends(get_db)):
     """Database-specific health check."""
-    from models.database import health_checker
-    
-    if await health_checker.check_health():
+
+    try:
+        # Test the connection directly
+        await db.execute(text("SELECT 1"))
         return {"status": "connected", "message": "Database is available"}
-    else:
+    except Exception as e:
         return {
             "status": "disconnected",
             "message": "Database is not available",
-            "error": "Database connection failed"
+            "error": str(e),
         }

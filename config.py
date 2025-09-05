@@ -1,10 +1,11 @@
-# config.py
 """
 Configuration module for environment variables and application settings.
 """
 
 import os
 import secrets
+from urllib.parse import urlparse
+
 from dotenv import load_dotenv
 
 # Constants
@@ -21,9 +22,30 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
-# Convert postgresql:// to postgres:// for asyncpg compatibility
-DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgres://")
 
+# Parse the database URL to handle SSL mode properly
+parsed_url = urlparse(DATABASE_URL)
+query_params = {}
+if parsed_url.query:
+    query_params = dict(param.split('=') for param in parsed_url.query.split('&') if '=' in param)
+
+# Remove sslmode from query parameters if present and handle it separately
+ssl_mode = query_params.pop('sslmode', 'prefer')
+if 'localhost' in parsed_url.hostname or '127.0.0.1' in parsed_url.hostname:
+    ssl_mode = 'prefer'
+
+# Reconstruct the URL without sslmode in query
+new_query = '&'.join([f"{k}={v}" for k, v in query_params.items()])
+clean_url = parsed_url._replace(query=new_query if new_query else None).geturl()
+
+# Ensure we're using the asyncpg driver
+if clean_url.startswith('postgres://'):
+    clean_url = clean_url.replace('postgres://', 'postgresql+asyncpg://')
+elif clean_url.startswith('postgresql://'):
+    clean_url = clean_url.replace('postgresql://', 'postgresql+asyncpg://')
+elif not clean_url.startswith('postgresql+asyncpg://'):
+    clean_url = 'postgresql+asyncpg://' + clean_url.split('://', 1)[1]
+    
 # Application settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
 DEBUG = ENVIRONMENT == "development"
@@ -51,8 +73,11 @@ ALLOWED_EXTENSIONS = {
 }
 
 # SQLAlchemy configuration
-SQLALCHEMY_DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://")
+SQLALCHEMY_DATABASE_URL = clean_url
 POOL_SIZE = 5
 MAX_OVERFLOW = 10
 POOL_TIMEOUT = 30
 POOL_RECYCLE = 1800
+
+# SSL configuration for database
+SSL_MODE = ssl_mode

@@ -3,14 +3,14 @@ import logging
 from typing import List, Literal, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, update, delete, func
-from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import get_db
-from models.database_models import Book as BookModel
-from models.schemas import Book, BookResponse, BookUpdate, SuccessResponse
-from services.auth_service import auth_service, TokenData
+from models.schemas import (Book, BookModel, BookResponse, BookUpdate,
+                            SuccessResponse)
+from services.auth_service import TokenData, auth_service
 
 logger = logging.getLogger(__name__)
 

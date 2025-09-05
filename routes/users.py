@@ -1,10 +1,12 @@
+# routes/users.py
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from models.database import get_db
-from models.schemas import UserResponse, UserUpdate, UserListResponse, UserRole
-from services.auth_service import auth_service, TokenData
+from models.schemas import UserListResponse, UserResponse, UserRole, UserUpdate
+from services.auth_service import TokenData, auth_service
 from services.user_service import user_service
 
 logger = logging.getLogger(__name__)
@@ -28,10 +30,10 @@ def require_role(required_role: UserRole):
 )
 async def get_current_user_profile(
     current_user: TokenData = Depends(auth_service.get_current_user),
-    conn = Depends(get_db)
+    db = Depends(get_db)
 ):
     """Get current authenticated user's profile"""
-    user = await user_service.get_user_by_id(current_user.user_id)
+    user = await user_service.get_user_by_id(current_user.user_id, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -49,11 +51,12 @@ async def list_users(
     limit: int = Query(10, ge=1, le=100),
     role: Optional[UserRole] = None,
     is_active: Optional[bool] = None,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """List all users with pagination and filtering (Admin only)"""
     try:
-        result = await user_service.list_users(page, limit, role, is_active)
+        result = await user_service.list_users(page, limit, role, is_active, db)
         return UserListResponse(**result)
     except Exception as e:
         logger.error(f"Failed to list users: {e}")
@@ -69,10 +72,11 @@ async def list_users(
 )
 async def get_user(
     user_id: int,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """Get user by ID (Admin only)"""
-    user = await user_service.get_user_by_id(user_id)
+    user = await user_service.get_user_by_id(user_id, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -88,10 +92,11 @@ async def get_user(
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """Update user information (Admin only)"""
-    user = await user_service.update_user(user_id, user_data)
+    user = await user_service.update_user(user_id, user_data, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -106,10 +111,11 @@ async def update_user(
 )
 async def delete_user(
     user_id: int,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """Delete user (Admin only)"""
-    success = await user_service.delete_user(user_id)
+    success = await user_service.delete_user(user_id, db)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -123,10 +129,11 @@ async def delete_user(
 )
 async def activate_user(
     user_id: int,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """Activate user account (Admin only)"""
-    user = await user_service.update_user(user_id, UserUpdate(is_active=True))
+    user = await user_service.update_user(user_id, UserUpdate(is_active=True), db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -141,13 +148,16 @@ async def activate_user(
 )
 async def deactivate_user(
     user_id: int,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN))
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db = Depends(get_db)
 ):
     """Deactivate user account (Admin only)"""
-    user = await user_service.update_user(user_id, UserUpdate(is_active=False))
+    user = await user_service.update_user(user_id, UserUpdate(is_active=False), db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
     return user
+
+

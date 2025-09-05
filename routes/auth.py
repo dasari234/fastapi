@@ -1,13 +1,14 @@
 import logging
-from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import get_db
-from models.schemas import UserCreate, Token, UserResponse, PasswordResetRequest, PasswordReset
+from models.schemas import (PasswordReset, PasswordResetRequest, Token,
+                            UserCreate, UserResponse)
 from services.auth_service import auth_service
 from services.user_service import user_service
-from config import ACCESS_TOKEN_EXPIRE_MINUTES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Authentication"], prefix="/auth")
@@ -18,34 +19,18 @@ router = APIRouter(tags=["Authentication"], prefix="/auth")
     status_code=status.HTTP_201_CREATED,
     summary="Register new user"
 )
-async def register(user_data: UserCreate, conn = Depends(get_db)):
+async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     """Register a new user"""
     try:
-        user = await user_service.create_user(user_data)
-        
-        # Also store in file_uploads table for compatibility
-        await conn.execute(
-            """
-            INSERT INTO file_uploads (
-                original_filename, s3_key, s3_url, file_size, content_type,
-                user_id, upload_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            f"user_{user['id']}",
-            f"users/{user['id']}",
-            f"/api/v1/users/{user['id']}",
-            0,
-            "application/json",
-            str(user['id']),
-            "success"
-        )
+        # Use the database session directly
+        user = await user_service.create_user(user_data, db)
         
         return user
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"User registration failed: {e}")
+        logger.error(f"User registration failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to register user"
@@ -56,10 +41,10 @@ async def register(user_data: UserCreate, conn = Depends(get_db)):
     response_model=Token,
     summary="User login"
 )
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), conn = Depends(get_db)):
+async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
     """Authenticate user and return tokens"""
     try:
-        user = await user_service.get_user_by_email(form_data.username)
+        user = await user_service.get_user_by_email(form_data.username, db)
         
         if not user or not auth_service.verify_password(form_data.password, user["password_hash"]):
             raise HTTPException(
@@ -93,7 +78,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), conn = Depends
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Login failed: {e}")
+        logger.error(f"Login failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Login failed"
@@ -157,3 +142,4 @@ async def request_password_reset(request: PasswordResetRequest):
 async def reset_password(reset_data: PasswordReset):
     """Reset password with token"""
     return {"message": "Password reset successful (implementation required)"}
+
