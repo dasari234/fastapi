@@ -4,10 +4,11 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, validator
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, Integer,
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer,
                         String, Text)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
@@ -17,6 +18,27 @@ class UserRole(str, Enum):
     MODERATOR = "moderator"
 
 # SQLAlchemy Models
+
+class LoginHistory(Base):
+    __tablename__ = "login_history"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    login_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    ip_address = Column(String(45), nullable=True)
+    user_agent = Column(String(500), nullable=True)
+    login_status = Column(String(20), default="success", nullable=False) 
+    failure_reason = Column(String(255), nullable=True) 
+    
+    user = relationship("User", back_populates="login_history")
+    
+class LoginHistoryResponse(BaseModel):
+    login_time: datetime
+    ip_address: Optional[str]
+    user_agent: Optional[str]
+    
+    class Config:
+        from_attributes = True
 class User(Base):
     __tablename__ = "users"
     __allow_unmapped__ = True
@@ -30,6 +52,7 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    login_history = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan")
 
 class BookModel(Base):
     __tablename__ = "books"
@@ -227,3 +250,12 @@ class UserListResponse(BaseModel):
     page: int
     limit: int
     total_pages: int
+    
+class TokenWithLoginInfo(BaseModel):
+    access_token: str
+    token_type: str
+    refresh_token: str
+    last_login: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

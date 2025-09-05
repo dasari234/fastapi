@@ -89,6 +89,7 @@ async def init_db() -> None:
             pool_timeout=POOL_TIMEOUT,
             pool_recycle=POOL_RECYCLE,
             echo=DEBUG,
+            pool_pre_ping=True,
             connect_args=connect_args
         )
         
@@ -135,6 +136,7 @@ async def init_db_without_ssl():
         pool_timeout=POOL_TIMEOUT,
         pool_recycle=POOL_RECYCLE,
         echo=DEBUG,
+        pool_pre_ping=True,
         connect_args={'ssl': False}
     )
     
