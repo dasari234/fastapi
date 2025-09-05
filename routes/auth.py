@@ -50,9 +50,8 @@ async def login(
     try:
         user = await user_service.get_user_by_email(form_data.username, db)
         
-        print(f"User type: {type(user)}")
-        print(f"User content: {user}")
-        
+        ip_address = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
          
         if not user or not auth_service.verify_password(form_data.password, user["password_hash"]):
             
@@ -63,21 +62,30 @@ async def login(
             )
         
         if not user["is_active"]:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account is deactivated",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            
-        # Log failed attempt due to inactive account
-        ip_address = request.client.host if request and request.client else None
-        user_agent = request.headers.get("user-agent") if request else None
-        login_record = LoginHistory(
+            login_record = LoginHistory(
             user_id=user["id"],
             ip_address=ip_address,
             user_agent=user_agent,
             login_status="failed",
             failure_reason="Account deactivated"
+            )
+            db.add(login_record)
+            await db.commit()
+            
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User account is deactivated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            # Log failed login attempt for deactivated account
+            
+            
+        login_record = LoginHistory(
+            user_id=user["id"],
+            ip_address=ip_address,
+            user_agent=user_agent,
+            login_status="success",
+            failure_reason="Account activated"
         )
         db.add(login_record)
         await db.commit()
