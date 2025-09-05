@@ -115,5 +115,3 @@ class AuthService:
 # Create global instance
 auth_service = AuthService()
 
-# Create global instance
-auth_service = AuthService()
