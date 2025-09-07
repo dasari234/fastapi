@@ -412,3 +412,7 @@ class FileVersionHistoryResponse(StandardResponse):
 
 class FileRestoreResponse(StandardResponse):
     data: Optional[Dict[str, Any]] = None
+    
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str

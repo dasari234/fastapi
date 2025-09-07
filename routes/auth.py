@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import get_db
-from models.schemas import ( PasswordReset, PasswordResetRequest, StandardResponse, Token,  
+from models.schemas import ( PasswordReset, PasswordResetRequest, RefreshTokenRequest, StandardResponse, Token,  
                             UserCreate)
 from services.auth_service import auth_service
 from services.user_service import user_service
@@ -190,10 +190,15 @@ async def login(
     response_model=Token,
     summary="Refresh access token"
 )
-async def refresh_token(refresh_token: str):
+async def refresh_token(
+    request: RefreshTokenRequest,
+    db: AsyncSession = Depends(get_db)
+):
     """Refresh access token using refresh token"""
     try:
-        payload = auth_service.verify_token(refresh_token)
+        print("token ***********************", request.refresh_token)
+        payload = auth_service.verify_token(request.refresh_token)
+        print("verified token ***********************", payload)
         user_id = payload.get("user_id")
         email = payload.get("email")
         
