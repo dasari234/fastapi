@@ -197,7 +197,7 @@ async def refresh_token(
     """Refresh access token using refresh token"""
     try:
         print("token ***********************", request.refresh_token)
-        payload = auth_service.verify_token(request.refresh_token)
+        payload = auth_service.verify_token(request.refresh_token)  # Access from request body
         print("verified token ***********************", payload)
         user_id = payload.get("user_id")
         email = payload.get("email")
