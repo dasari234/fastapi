@@ -1,5 +1,4 @@
 import logging
-
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import HTTPException, status
@@ -21,6 +20,10 @@ class S3Service:
     async def upload_file(self, file, filename: str, folder: str = None) -> dict:
         """Upload file to S3 bucket and return presigned URL"""
         try:
+            # Ensure filename is a string (fix for the Key type error)
+            if not isinstance(filename, str):
+                raise ValueError(f"Filename must be a string, got {type(filename)}")
+            
             # Generate S3 key
             s3_key = f"{folder}/{filename}" if folder else filename
             
@@ -50,6 +53,12 @@ class S3Service:
                 "url_expires_in": 604800
             }
             
+        except ValueError as e:
+            logger.error(f"Invalid filename type: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e)
+            )
         except NoCredentialsError:
             logger.error("AWS credentials not found")
             raise HTTPException(
@@ -80,10 +89,11 @@ class S3Service:
             
         except ClientError as e:
             logger.error(f"S3 delete error: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to delete file: {e}"
-            )
+            # Don't raise exception, just return False to allow graceful handling
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during S3 delete: {e}")
+            return False
 
     async def list_files(self, prefix: str = None) -> list:
         """List all files in S3 bucket"""

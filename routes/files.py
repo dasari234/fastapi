@@ -1,21 +1,22 @@
 import json
 import logging
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import chardet
 from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      Request, UploadFile, status)
 from fastapi.concurrency import run_in_threadpool
-
+from sqlalchemy.ext.asyncio import AsyncSession
 from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
-from models.schemas import (DeleteFileResponse, FileUploadListResponse,
-                            MultipleFileUploadResponse, UploadedFileInfo,
-                            UploadError)
+from models.database import get_db
+from models.schemas import (StandardResponse, UploadedFileInfo, UploadError,
+                           MultipleFileUploadResponse, DeleteFileResponse)
 from services.auth_service import TokenData, auth_service
 from services.s3_service import s3_service
-from services.uploads_service import uploads_service
+from services.file_service import file_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
@@ -28,47 +29,34 @@ class FileValidator:
     """File validation utility class"""
     
     @staticmethod
-    def validate_file_basic(file: UploadFile) -> None:
+    def validate_file_basic(file: UploadFile) -> Tuple[bool, Optional[str], Optional[int]]:
         """Basic file validation (size and type)"""
         if not file.filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Filename is required"
-            )
+            return False, "Filename is required", status.HTTP_400_BAD_REQUEST
             
         # Check file size
         if file.size and file.size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File size too large. Maximum allowed: {MAX_FILE_SIZE // (1024 * 1024)}MB",
-            )
+            return False, f"File size too large. Maximum allowed: {MAX_FILE_SIZE // (1024 * 1024)}MB", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
 
         # Check file extension
         file_extension = Path(file.filename).suffix.lower().lstrip('.')
         if not file_extension:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="File must have an extension"
-            )
+            return False, "File must have an extension", status.HTTP_400_BAD_REQUEST
             
         allowed_extensions = []
         for extensions in ALLOWED_EXTENSIONS.values():
             allowed_extensions.extend(extensions)
 
         if file_extension not in allowed_extensions:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"File type '{file_extension}' not allowed. Allowed types: {', '.join(allowed_extensions)}",
-            )
+            return False, f"File type '{file_extension}' not allowed. Allowed types: {', '.join(allowed_extensions)}", status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+
+        return True, None, None
 
     @staticmethod
-    def validate_filename(filename: str) -> str:
+    def validate_filename(filename: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
         """Sanitize and validate filename"""
         if not filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Filename cannot be empty"
-            )
+            return None, "Filename cannot be empty", status.HTTP_400_BAD_REQUEST
         
         # Remove/replace invalid characters
         invalid_chars = '<>:"/\\|?*'
@@ -78,35 +66,50 @@ class FileValidator:
         if len(sanitized) > 255:
             sanitized = sanitized[:255]
             
-        return sanitized
+        return sanitized, None, None
 
 class ContentProcessor:
-    """Content processing utility class"""
+    """Content processing utility class with timing"""
     
     @staticmethod
-    async def read_file_content_safely(file: UploadFile) -> tuple[bytes, str, float]:
+    async def read_file_content_safely(file: UploadFile) -> Tuple[Optional[bytes], Optional[str], float, float, Optional[str], Optional[int]]:
         """
-        Safely read file content with encoding detection and scoring
-        Returns: (raw_content, text_content, score)
+        Safely read file content with encoding detection, scoring, and timing
+        Returns: (raw_content, text_content, score, processing_time_ms, error_message, status_code)
         """
+        start_time = time.time()
         try:
             # Read raw content
             raw_content = await file.read()
             
-            # Limit content size for text processing to avoid memory issues
-            content_for_analysis = raw_content[:MAX_CONTENT_LENGTH_FOR_SCORING]
+            # For binary files (like PDF), don't attempt to decode as text
+            text_content = ""
+            score = 0.0
             
-            # Detect encoding for text files
-            text_content = await ContentProcessor._decode_content(content_for_analysis)
+            # Only attempt text processing for text-based files
+            if file.content_type and file.content_type.startswith('text/'):
+                # Limit content size for text processing to avoid memory issues
+                content_for_analysis = raw_content[:MAX_CONTENT_LENGTH_FOR_SCORING]
+                
+                # Detect encoding for text files
+                text_content = await ContentProcessor._decode_content(content_for_analysis)
+                
+                # Calculate score only for text content
+                score = ContentProcessor.calculate_file_score(text_content)
+            else:
+                # For binary files (PDF, images, etc.), use a basic score based on file size
+                # Cap the score at 100
+                score = min(100.0, len(raw_content) / 10000)
             
-            # Calculate score
-            score = ContentProcessor.calculate_file_score(text_content)
+            processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
             
-            return raw_content, text_content, score
+            return raw_content, text_content, score, processing_time, None, None
             
         except Exception as e:
+            processing_time = (time.time() - start_time) * 1000
             logger.warning(f"Error processing file content: {e}")
-            return raw_content, "", 0.0
+            return raw_content, "", 0.0, processing_time, f"Error processing file content: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR
+
 
     @staticmethod
     async def _decode_content(content: bytes) -> str:
@@ -167,24 +170,22 @@ class MetadataHandler:
     """Metadata handling utility class"""
     
     @staticmethod
-    def parse_metadata(metadata_str: Optional[str]) -> Optional[Dict[str, Any]]:
+    def parse_metadata(metadata_str: Optional[str]) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[int]]:
         """Safely parse metadata JSON string"""
         if not metadata_str:
-            return None
+            return None, None, None
             
         try:
             parsed = json.loads(metadata_str)
             # Validate that it's a dictionary
             if not isinstance(parsed, dict):
-                logger.warning(f"Metadata must be a JSON object, got: {type(parsed)}")
-                return None
-            return parsed
+                return None, "Metadata must be a JSON object", status.HTTP_400_BAD_REQUEST
+            return parsed, None, None
         except json.JSONDecodeError as e:
-            logger.warning(f"Invalid metadata JSON: {e}")
-            return None
+            return None, f"Invalid metadata JSON: {str(e)}", status.HTTP_400_BAD_REQUEST
         except Exception as e:
-            logger.error(f"Unexpected error parsing metadata: {e}")
-            return None
+            return None, f"Unexpected error parsing metadata: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR
+
 
 async def get_client_ip(request: Request) -> str:
     """Get client IP address with proper header checking"""
@@ -204,19 +205,22 @@ async def get_client_ip(request: Request) -> str:
 async def generate_safe_filename(
     original_filename: str, 
     custom_filename: Optional[str] = None
-) -> str:
+) -> Tuple[Optional[str], Optional[str], Optional[int]]:
     """Generate a safe, unique filename"""
     file_extension = Path(original_filename).suffix.lower()
     
     if custom_filename:
         # Sanitize custom filename
-        safe_name = FileValidator.validate_filename(custom_filename)
+        safe_name, error, status_code = FileValidator.validate_filename(custom_filename)
+        if error:
+            return None, error, status_code
         filename = f"{safe_name}{file_extension}"
     else:
         # Generate UUID-based filename
         filename = f"{uuid.uuid4().hex}{file_extension}"
     
-    return filename
+    return filename, None, None
+
 
 @router.post(
     "/upload",
@@ -236,33 +240,99 @@ async def upload_file(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string"
     ),
-    current_user: TokenData = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
 ):
     """Upload a single file to AWS S3 bucket and store record in PostgreSQL"""
     try:
-        # Validate file
-        FileValidator.validate_file_basic(file)
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            return MultipleFileUploadResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error="Authentication failed", status_code=auth_status)]
+            )
         
-        # Process file content
-        raw_content, text_content, score = await ContentProcessor.read_file_content_safely(file)
+        # Validate file
+        is_valid, error_msg, error_code = FileValidator.validate_file_basic(file)
+        if not is_valid:
+            return MultipleFileUploadResponse(
+                success=False,
+                message="File validation failed",
+                error=error_msg,
+                status_code=error_code,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error=error_msg, status_code=error_code)]
+            )
+        
+        # Process file content - now expecting 6 return values
+        raw_content, text_content, score, processing_time_ms, content_error, content_status = await ContentProcessor.read_file_content_safely(file)
+        
+        if content_error:
+            return MultipleFileUploadResponse(
+                success=False,
+                message="File content processing failed",
+                error=content_error,
+                status_code=content_status,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error=content_error, status_code=content_status)]
+            )
         
         # Reset file pointer for S3 upload
         await file.seek(0)
 
         # Generate safe filename
-        filename = await generate_safe_filename(file.filename, custom_filename)
+        filename, filename_error, filename_status = await generate_safe_filename(file.filename, custom_filename)
+        if filename_error:
+            return MultipleFileUploadResponse(
+                success=False,
+                message="Filename generation failed",
+                error=filename_error,
+                status_code=filename_status,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error=filename_error, status_code=filename_status)]
+            )
 
         # Upload to S3
         result = await s3_service.upload_file(file, filename, folder)
 
         # Parse metadata
-        upload_metadata = MetadataHandler.parse_metadata(metadata)
+        upload_metadata, metadata_error, metadata_status = MetadataHandler.parse_metadata(metadata)
+        if metadata_error:
+            # Clean up S3 file if metadata parsing fails
+            try:
+                await s3_service.delete_file(result["s3_key"])
+                logger.warning(f"Deleted file from S3 due to metadata error: {result['s3_key']}")
+            except Exception as s3_error:
+                logger.error(f"Failed to cleanup S3 file after metadata error: {s3_error}")
+            
+            return MultipleFileUploadResponse(
+                success=False,
+                message="Metadata parsing failed",
+                error=metadata_error,
+                status_code=metadata_status,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error=metadata_error, status_code=metadata_status)]
+            )
 
         # Get client IP
         client_ip = await get_client_ip(request)
 
-        # Store in database
-        db_record = await uploads_service.create_upload_record(
+        # Store in database with processing time
+        db_record, db_status = await file_service.create_upload_record(
             original_filename=file.filename,
             s3_key=result["s3_key"],
             s3_url=result["file_url"],
@@ -271,18 +341,44 @@ async def upload_file(
             file_content=text_content,
             score=score,
             folder_path=folder,
-            user_id=str(current_user.user_id),  # Use authenticated user's ID
+            user_id=str(current_user.user_id),
             metadata=upload_metadata,
             upload_ip=client_ip,
+            processing_time_ms=processing_time_ms
         )
+
+        if db_status != status.HTTP_201_CREATED or not db_record:
+            # If S3 upload was successful but DB failed, try to delete from S3 to maintain consistency
+            try:
+                await s3_service.delete_file(result["s3_key"])
+                logger.warning(f"Deleted file from S3 due to DB failure: {result['s3_key']}")
+            except Exception as s3_error:
+                logger.error(f"Failed to cleanup S3 file after DB failure: {s3_error}")
+
+            error_msg = "Failed to create database record"
+            if db_record and "error" in db_record:
+                error_msg = db_record.get("error", error_msg)
+            
+            return MultipleFileUploadResponse(
+                success=False,
+                message="Database record creation failed",
+                error=error_msg,
+                status_code=db_status,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename or "unknown", error=error_msg, status_code=db_status)]
+            )
 
         logger.info(
             f"File uploaded successfully: {result['s3_key']}, "
             f"DB ID: {db_record['id'] if db_record else 'N/A'}, "
-            f"Score: {score}, Size: {result['file_size']} bytes"
+            f"Score: {score}, Processing time: {processing_time_ms}ms, Size: {result['file_size']} bytes"
         )
 
         return MultipleFileUploadResponse(
+            success=True,
+            status_code=status.HTTP_201_CREATED,
             uploaded_files=[
                 UploadedFileInfo(
                     original_filename=file.filename,
@@ -306,11 +402,19 @@ async def upload_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=f"Upload failed: {str(e)}"
         )
-
+        
+        
 @router.post(
     "/upload-multiple",
     response_model=MultipleFileUploadResponse,
-    status_code=status.HTTP_201_CREATED,
+    summary="Upload multiple files",
+    responses={
+        201: {"description": "Files uploaded successfully"},
+        400: {"description": "Invalid request or no files provided"},
+        413: {"description": "Files too large"},
+        415: {"description": "Unsupported file types"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def upload_multiple_files(
     request: Request,
@@ -323,16 +427,24 @@ async def upload_multiple_files(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string for all files"
     ),
-    current_user: TokenData = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
 ):
     """Upload multiple files to AWS S3 bucket and store records in PostgreSQL"""
+    # Extract TokenData from tuple first
+    current_user, auth_status = current_user_result
+    if auth_status != status.HTTP_200_OK or not current_user:
+        raise HTTPException(
+            status_code=auth_status,
+            detail="Authentication failed: Invalid or expired token"
+        )
+    
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided"
         )
     
-    if len(files) > 50:  # Reasonable limit for multiple uploads
+    if len(files) > 50:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Too many files. Maximum 50 files per request"
@@ -343,7 +455,12 @@ async def upload_multiple_files(
         errors = []
 
         # Parse metadata once for all files
-        upload_metadata = MetadataHandler.parse_metadata(metadata)
+        upload_metadata, metadata_error, metadata_status = MetadataHandler.parse_metadata(metadata)
+        if metadata_error:
+            raise HTTPException(
+                status_code=metadata_status,
+                detail=metadata_error
+            )
 
         # Get client IP once
         client_ip = await get_client_ip(request)
@@ -351,29 +468,58 @@ async def upload_multiple_files(
         # Sanitize prefix if provided
         safe_prefix = None
         if prefix:
-            safe_prefix = FileValidator.validate_filename(prefix)
+            safe_prefix, prefix_error, prefix_status = FileValidator.validate_filename(prefix)
+            if prefix_error:
+                raise HTTPException(
+                    status_code=prefix_status,
+                    detail=prefix_error
+                )
 
         for i, file in enumerate(files):
             try:
                 # Validate file
-                FileValidator.validate_file_basic(file)
+                is_valid, error_msg, error_code = FileValidator.validate_file_basic(file)
+                if not is_valid:
+                    errors.append(UploadError(
+                        filename=file.filename or f"file_{i+1}",
+                        error=error_msg,
+                        status_code=error_code
+                    ))
+                    continue
                 
-                # Process file content
-                raw_content, text_content, score = await ContentProcessor.read_file_content_safely(file)
+                # Process file content - now expecting 6 values
+                raw_content, text_content, score, processing_time_ms, content_error, content_status = await ContentProcessor.read_file_content_safely(file)
+                
+                if content_error:
+                    errors.append(UploadError(
+                        filename=file.filename or f"file_{i+1}",
+                        error=content_error,
+                        status_code=content_status
+                    ))
+                    continue
                 
                 # Reset file pointer for S3 upload
                 await file.seek(0)
 
-                # Generate filename with prefix
-                file_extension = Path(file.filename).suffix.lower()
-                filename_prefix = f"{safe_prefix}_" if safe_prefix else ""
-                filename = f"{filename_prefix}{uuid.uuid4().hex}{file_extension}"
+                # Generate safe filename
+                filename, filename_error, filename_status = await generate_safe_filename(file.filename, None)
+                if filename_error:
+                    errors.append(UploadError(
+                        filename=file.filename or f"file_{i+1}",
+                        error=filename_error,
+                        status_code=filename_status
+                    ))
+                    continue
+
+                # Add prefix if specified
+                if safe_prefix:
+                    filename = f"{safe_prefix}_{filename}"
 
                 # Upload to S3
                 result = await s3_service.upload_file(file, filename, folder)
 
-                # Store in database
-                db_record = await uploads_service.create_upload_record(
+                # Store in database with processing time
+                db_record, db_status = await file_service.create_upload_record(
                     original_filename=file.filename,
                     s3_key=result["s3_key"],
                     s3_url=result["file_url"],
@@ -385,7 +531,27 @@ async def upload_multiple_files(
                     user_id=str(current_user.user_id),
                     metadata=upload_metadata,
                     upload_ip=client_ip,
+                    processing_time_ms=processing_time_ms
                 )
+
+                if db_status != status.HTTP_201_CREATED or not db_record:
+                    # If S3 upload was successful but DB failed, try to delete from S3 to maintain consistency
+                    try:
+                        await s3_service.delete_file(result["s3_key"])
+                        logger.warning(f"Deleted file from S3 due to DB failure: {result['s3_key']}")
+                    except Exception as s3_error:
+                        logger.error(f"Failed to cleanup S3 file after DB failure: {s3_error}")
+
+                    error_msg = "Failed to create database record"
+                    if db_record and "error" in db_record:
+                        error_msg = db_record.get("error", error_msg)
+                    
+                    errors.append(UploadError(
+                        filename=file.filename or f"file_{i+1}",
+                        error=error_msg,
+                        status_code=db_status
+                    ))
+                    continue
 
                 uploaded_files.append(
                     UploadedFileInfo(
@@ -397,28 +563,21 @@ async def upload_multiple_files(
                     )
                 )
 
-                logger.info(
-                    f"File {i+1}/{len(files)} uploaded: {result['s3_key']}, "
-                    f"DB ID: {db_record['id'] if db_record else 'N/A'}, Score: {score}"
-                )
+                logger.info(f"File {i+1}/{len(files)} uploaded: {result['s3_key']}")
 
             except HTTPException as e:
-                errors.append(
-                    UploadError(
-                        filename=file.filename or f"file_{i+1}",
-                        error=e.detail,
-                        status_code=e.status_code,
-                    )
-                )
+                errors.append(UploadError(
+                    filename=file.filename or f"file_{i+1}",
+                    error=e.detail,
+                    status_code=e.status_code
+                ))
                 logger.warning(f"File upload failed: {file.filename} - {e.detail}")
             except Exception as e:
-                errors.append(
-                    UploadError(
-                        filename=file.filename or f"file_{i+1}",
-                        error=str(e),
-                        status_code=500,
-                    )
-                )
+                errors.append(UploadError(
+                    filename=file.filename or f"file_{i+1}",
+                    error=str(e),
+                    status_code=500,
+                ))
                 logger.error(f"File upload failed: {file.filename} - {e}", exc_info=True)
 
         success_count = len(uploaded_files)
@@ -433,6 +592,8 @@ async def upload_multiple_files(
             message = f"Upload completed with mixed results. Success: {success_count}, Failed: {failed_count}"
 
         return MultipleFileUploadResponse(
+            success=True,
+            status_code=status.HTTP_201_CREATED,
             uploaded_files=uploaded_files,
             total_uploaded=success_count,
             total_failed=failed_count,
@@ -440,103 +601,452 @@ async def upload_multiple_files(
             message=message,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Multiple upload failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail=f"Multiple upload failed: {str(e)}"
         )
-
-@router.get("", response_model=FileUploadListResponse)
+  
+        
+@router.get(
+    "",
+    response_model=StandardResponse,
+    summary="List upload records with version info and search",
+    responses={
+        200: {"description": "Records retrieved successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        500: {"description": "Internal server error"}
+    }
+)
 async def list_upload_records(
     user_id: Optional[str] = Query(None, description="Filter by user ID"),
     folder: Optional[str] = Query(None, description="Filter by folder"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of records per page"),
+    search: Optional[str] = Query(None, description="Search across filename, content, user details"),
+    show_all_versions: bool = Query(False, description="Show all versions or only current"),
+    limit: int = Query(10, ge=1, le=1000, description="Number of records per page"),  # Changed default to 10
     page: int = Query(1, ge=1, description="Page number"),
-    current_user: TokenData = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """List file upload records from PostgreSQL database with pagination"""
+    """List file upload records with version control and search capability"""
     try:
+        # Extract TokenData from tuple
+        current_user, status_code = current_user_result
+        if status_code != status.HTTP_200_OK or not current_user:
+            return StandardResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=status_code
+            )
+            
         # Non-admin users can only see their own files
-        if current_user.role != "admin":
+        if current_user.role != "admin": 
             user_id = str(current_user.user_id)
             
         offset = (page - 1) * limit
-        result = await uploads_service.list_uploads(user_id, folder, limit, offset)
-
+        
+        # DEBUG: Log the parameters being passed
+        logger.info(f"Calling service with: user_id={user_id}, folder={folder}, search={search}, limit={limit}, offset={offset}")
+        
+        # Get uploads based on version filter
+        if show_all_versions:
+            result, status_code = await file_service.list_uploads(user_id, folder, search, limit, offset, db)
+        else:
+            # Only show current versions
+            result, status_code = await file_service.list_current_versions(user_id, folder, search, limit, offset, db)
+        
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Failed to retrieve upload records",
+                error="Database query failed",
+                status_code=status_code
+            )
+        
         total_pages = max(1, (result["total_count"] + limit - 1) // limit)
 
-        return FileUploadListResponse(
-            data=result["records"],
-            total_count=result["total_count"],
-            page=page,
-            limit=limit,
-            total_pages=total_pages,
+        return StandardResponse(
+            success=True,
+            message="Records retrieved successfully",
+            data={
+                "records": result["records"],
+                "total_count": result["total_count"],
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+                "show_all_versions": show_all_versions,
+                "search_query": result.get("search_query"),
+                "has_search": search is not None
+            },
+            status_code=status.HTTP_200_OK
         )
-
+        
     except Exception as e:
         logger.error(f"Failed to list upload records: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=f"Failed to retrieve upload records: {str(e)}"
+        return StandardResponse(
+            success=False,
+            message="Failed to retrieve upload records",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
-@router.delete("/{s3_key:path}", response_model=DeleteFileResponse)
+@router.delete(
+    "/{s3_key:path}",
+    response_model=DeleteFileResponse,
+    summary="Delete upload record",
+    responses={
+        200: {"description": "Record deleted successfully"},
+        400: {"description": "Invalid S3 key"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "Record not found"},
+        500: {"description": "Internal server error"}
+    }
+)
 async def delete_upload_record(
     s3_key: str,
     current_user: TokenData = Depends(auth_service.get_current_user)
 ):
     """Delete file upload record from PostgreSQL database and S3"""
     if not s3_key or s3_key.strip() == "":
-        raise HTTPException(
+        return DeleteFileResponse(
+            success=False,
+            message="Invalid S3 key",
+            error="S3 key cannot be empty",
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="S3 key cannot be empty"
+            deleted_key=None
         )
 
     try:
         # First check if record exists in database
-        record = await uploads_service.get_upload_record(s3_key)
-        if not record:
-            raise HTTPException(
+        record, record_status = await file_service.get_upload_record(s3_key)
+        if record_status == status.HTTP_404_NOT_FOUND:
+            return DeleteFileResponse(
+                success=False,
+                message="Record not found",
+                error="Record not found in database",
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Record not found in database"
+                deleted_key=s3_key
+            )
+        elif record_status != status.HTTP_200_OK:
+            return DeleteFileResponse(
+                success=False,
+                message="Database error",
+                error="Failed to retrieve record from database",
+                status_code=record_status,
+                deleted_key=s3_key
             )
 
         # Check if user has permission to delete (admin or owner)
         if current_user.role != "admin" and record.get("user_id") != str(current_user.user_id):
-            raise HTTPException(
+            return DeleteFileResponse(
+                success=False,
+                message="Permission denied",
+                error="You can only delete your own files",
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only delete your own files"
+                deleted_key=s3_key
             )
 
         # Delete from S3
         s3_success = await s3_service.delete_file(s3_key)
         if not s3_success:
-            logger.warning(f"File not found in S3: {s3_key}")
-            # Continue with database deletion even if S3 delete fails
-            # (file might have been manually deleted from S3)
+            # Log warning but continue with database deletion
+            logger.warning(f"Failed to delete file from S3: {s3_key}")
 
         # Delete from database
-        db_success = await uploads_service.delete_upload_record(s3_key)
+        db_success, db_status = await file_service.delete_upload_record(s3_key)
         
         if db_success:
             logger.info(f"Successfully deleted file and record: {s3_key}")
             return DeleteFileResponse(
-                message="File and record deleted successfully",
-                deleted_key=s3_key,
                 success=True,
+                message="File and record deleted successfully",
+                status_code=status.HTTP_200_OK,
+                deleted_key=s3_key
             )
         else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to delete database record"
+            return DeleteFileResponse(
+                success=False,
+                message="Database deletion failed",
+                error="Failed to delete database record",
+                status_code=db_status,
+                deleted_key=s3_key
             )
 
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Delete failed for {s3_key}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail=f"Delete operation failed: {str(e)}"
+        return DeleteFileResponse(
+            success=False,
+            message="Delete operation failed",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            deleted_key=s3_key
+        )
+        
+        
+@router.post(
+    "/{s3_key}/restore/{version_id}",
+    response_model=StandardResponse,
+    summary="Restore file version",
+    responses={
+        201: {"description": "Version restored successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "Version not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def restore_file_version(
+    s3_key: str,
+    version_id: int,
+    current_user: TokenData = Depends(auth_service.get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Restore a specific version of a file"""
+    try:
+        is_admin = current_user.role == "admin"
+        
+        restored_version, status_code = await file_service.restore_version(
+            version_id, str(current_user.user_id), is_admin, db
+        )
+        
+        if status_code == status.HTTP_404_NOT_FOUND:
+            return StandardResponse(
+                success=False,
+                message="Version not found",
+                error="Version not found or access denied",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        
+        if status_code == status.HTTP_403_FORBIDDEN:
+            return StandardResponse(
+                success=False,
+                message="Permission denied",
+                error="You can only restore your own files",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+        
+        if status_code != status.HTTP_201_CREATED:
+            return StandardResponse(
+                success=False,
+                message="Failed to restore version",
+                error="Internal server error",
+                status_code=status_code
+            )
+        
+        return StandardResponse(
+            success=True,
+            message="Version restored successfully",
+            data=restored_version,
+            status_code=status.HTTP_201_CREATED
+        )
+        
+    except Exception as e:
+        logger.error(f"Error restoring version {version_id}: {e}")
+        return StandardResponse(
+            success=False,
+            message="Failed to restore version",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+
+@router.get(
+    "/{s3_key}/versions",
+    response_model=StandardResponse,
+    summary="Get file version history",
+    responses={
+        200: {"description": "Version history retrieved successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "File not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_file_versions(
+    s3_key: str,
+    current_user: TokenData = Depends(auth_service.get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get version history for a specific file"""
+    try:
+        # Check if user is admin or owns the file
+        is_admin = current_user.role == "admin"
+        user_id_for_query = None if is_admin else str(current_user.user_id)
+        
+        versions, status_code = await file_service.get_file_versions(
+            s3_key, user_id_for_query, db
+        )
+        
+        if status_code == status.HTTP_404_NOT_FOUND:
+            return StandardResponse(
+                success=False,
+                message="File not found",
+                error="File not found or access denied",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Failed to retrieve version history",
+                error="Internal server error",
+                status_code=status_code
+            )
+        
+        return StandardResponse(
+            success=True,
+            message="Version history retrieved successfully",
+            data={"versions": versions, "total_versions": len(versions)},
+            status_code=status.HTTP_200_OK
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting version history for {s3_key}: {e}")
+        return StandardResponse(
+            success=False,
+            message="Failed to retrieve version history",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+@router.get(
+    "/{s3_key}/current",
+    response_model=StandardResponse,
+    summary="Get current file version",
+    responses={
+        200: {"description": "Current version retrieved successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "File not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_current_file_version(
+    s3_key: str,
+    current_user: TokenData = Depends(auth_service.get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get the current version of a file"""
+    try:
+        # Check if user is admin or owns the file
+        is_admin = current_user.role == "admin"
+        user_id_for_query = None if is_admin else str(current_user.user_id)
+        
+        current_version, status_code = await file_service.get_current_version(
+            s3_key, user_id_for_query, db
+        )
+        
+        if status_code == status.HTTP_404_NOT_FOUND:
+            return StandardResponse(
+                success=False,
+                message="File not found",
+                error="File not found or access denied",
+                status_code=status.HTTP_404_NOT_FOUND
+            )
+        
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Failed to retrieve current version",
+                error="Internal server error",
+                status_code=status_code
+            )
+        
+        return StandardResponse(
+            success=True,
+            message="Current version retrieved successfully",
+            data=current_version,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting current version for {s3_key}: {e}")
+        return StandardResponse(
+            success=False,
+            message="Failed to retrieve current version",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        
+@router.get(
+    "/admin/all-files",
+    response_model=StandardResponse,
+    summary="Admin view - List all files (all users)",
+    responses={
+        200: {"description": "Records retrieved successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def admin_list_all_files(
+    folder: Optional[str] = Query(None, description="Filter by folder"),
+    show_all_versions: bool = Query(False, description="Show all versions or only current"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of records per page"),
+    page: int = Query(1, ge=1, description="Page number"),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Admin endpoint to list all files from all users"""
+    try:
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            return StandardResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status
+            )
+        
+        # Only allow admins
+        if current_user.role != "admin":
+            return StandardResponse(
+                success=False,
+                message="Permission denied",
+                error="Admin access required",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
+            
+        offset = (page - 1) * limit
+        
+        # Get uploads based on version filter (no user_id filter for admin)
+        if show_all_versions:
+            result, status_code = await file_service.list_uploads(None, folder, limit, offset)
+        else:
+            # Only show current versions
+            result, status_code = await file_service.list_current_versions(None, folder, limit, offset)
+        
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Failed to retrieve upload records",
+                error="Database query failed",
+                status_code=status_code
+            )
+        
+        total_pages = max(1, (result["total_count"] + limit - 1) // limit)
+
+        return StandardResponse(
+            success=True,
+            message="All files retrieved successfully",
+            data={
+                "records": result["records"],
+                "total_count": result["total_count"],
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+                "show_all_versions": show_all_versions
+            },
+            status_code=status.HTTP_200_OK
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to list all files: {e}", exc_info=True)
+        return StandardResponse(
+            success=False,
+            message="Failed to retrieve all files",
+            error=f"Internal server error: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

@@ -1,44 +1,69 @@
-from datetime import datetime, timezone
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import get_db
-from models.schemas import (LoginHistory, PasswordReset, PasswordResetRequest, Token, TokenData, TokenWithLoginInfo,
-                            UserCreate, UserResponse)
+from models.schemas import ( PasswordReset, PasswordResetRequest, StandardResponse, Token,  
+                            UserCreate)
 from services.auth_service import auth_service
 from services.user_service import user_service
+from services.login_history_service import login_history_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Authentication"], prefix="/auth")
 
 @router.post(
     "/register",
-    response_model=UserResponse,
+    response_model=StandardResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Register new user"
+    summary="Register new user",
+    responses={
+        201: {"description": "User created successfully"},
+        409: {"description": "User with email already exists"},
+        500: {"description": "Internal server error"}
+    }
 )
 async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     """Register a new user"""
     try:
-        # Use the database session directly
-        user = await user_service.create_user(user_data, db)
+        user_response, status_code = await user_service.create_user(user_data, db)
         
-        return user
+        if status_code == status.HTTP_409_CONFLICT:
+            return StandardResponse(
+                success=False,
+                message="Registration failed",
+                error="User with this email already exists",
+                status_code=status.HTTP_409_CONFLICT
+            )
         
-    except HTTPException:
-        raise
+        if status_code != status.HTTP_201_CREATED:
+            return StandardResponse(
+                success=False,
+                message="Registration failed",
+                error="Internal server error",
+                status_code=status_code
+            )
+        
+        return StandardResponse(
+            success=True,
+            message="User registered successfully",
+            data=user_response,
+            status_code=status.HTTP_201_CREATED
+        )
+        
     except Exception as e:
         logger.error(f"User registration failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to register user"
+        return StandardResponse(
+            success=False,
+            message="Registration failed",
+            error="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
 @router.post(
     "/login",
-    response_model=TokenWithLoginInfo,
+    response_model=StandardResponse,
     summary="User login"
 )
 async def login(
@@ -48,75 +73,118 @@ async def login(
 ):
     """Authenticate user and return tokens"""
     try:
-        user = await user_service.get_user_by_email(form_data.username, db)
+        user_data, status_code = await user_service.get_user_by_email(form_data.username, db)
         
+        # Get client info for logging
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
-         
-        if not user or not auth_service.verify_password(form_data.password, user["password_hash"]):
-            
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials",
-                headers={"WWW-Authenticate": "Bearer"},
+        
+        if status_code == status.HTTP_404_NOT_FOUND:
+            # Record failed login attempt for non-existent user
+            await login_history_service.create_login_record(
+                db=db,
+                user_id=None,  # No user ID for non-existent users
+                ip_address=ip_address,
+                user_agent=user_agent,
+                login_status="failed",
+                failure_reason="User not found"
+            )
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Invalid credentials",
+                status_code=status.HTTP_401_UNAUTHORIZED
             )
         
-        if not user["is_active"]:
-            login_record = LoginHistory(
-            user_id=user["id"],
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Internal server error",
+                status_code=status_code
+            )
+        
+        # Verify password
+        is_valid, error = auth_service.verify_password(form_data.password, user_data["password_hash"])
+        if not is_valid:
+            # Record failed login attempt
+            await login_history_service.create_login_record(
+                db=db,
+                user_id=user_data["id"],
+                ip_address=ip_address,
+                user_agent=user_agent,
+                login_status="failed",
+                failure_reason="Invalid password"
+            )
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Invalid credentials",
+                status_code=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        if not user_data["is_active"]:
+            # Record failed login attempt for inactive account
+            await login_history_service.create_login_record(
+                db=db,
+                user_id=user_data["id"],
+                ip_address=ip_address,
+                user_agent=user_agent,
+                login_status="failed",
+                failure_reason="Account deactivated"
+            )
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="User account is deactivated",
+                status_code=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        # Record successful login
+        await login_history_service.create_login_record(
+            db=db,
+            user_id=user_data["id"],
             ip_address=ip_address,
             user_agent=user_agent,
-            login_status="failed",
-            failure_reason="Account deactivated"
-            )
-            db.add(login_record)
-            await db.commit()
-            
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="User account is deactivated",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            # Log failed login attempt for deactivated account
-            
-            
-        login_record = LoginHistory(
-            user_id=user["id"],
-            ip_address=ip_address,
-            user_agent=user_agent,
-            login_status="success",
-            failure_reason="Account activated"
+            login_status="success"
         )
-        db.add(login_record)
-        await db.commit()
-               
         
-        # Create tokens
+        # Create tokens and return response
         access_token = auth_service.create_access_token(
-            data={"user_id": user["id"], "email": user["email"], "role": user["role"]}
+            data={"user_id": user_data["id"], "email": user_data["email"], "role": user_data["role"]}
         )
         
         refresh_token = auth_service.create_refresh_token(
-            data={"user_id": user["id"], "email": user["email"]}
+            data={"user_id": user_data["id"], "email": user_data["email"]}
         )
         
-        return {
+        # Remove password hash from response
+        user_data.pop("password_hash", None)
+        
+        response_data = {
             "access_token": access_token,
             "token_type": "bearer",
-            "refresh_token": refresh_token
+            "refresh_token": refresh_token,
+            "user": user_data
         }
         
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Login failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Login failed"
+        return StandardResponse(
+            success=True,
+            message="Login successful",
+            data=response_data,
+            status_code=status.HTTP_200_OK
         )
         
+    except Exception as e:
+        logger.error(f"Login failed: {e}", exc_info=True)
+        return StandardResponse(
+            success=False,
+            message="Login failed",
+            error="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+         
 @router.post(
     "/refresh",
     response_model=Token,
@@ -175,25 +243,3 @@ async def request_password_reset(request: PasswordResetRequest):
 async def reset_password(reset_data: PasswordReset):
     """Reset password with token"""
     return {"message": "Password reset successful (implementation required)"}
-
-@router.get(
-    "/login-history",
-    summary="Get user profile with last login info"
-)
-async def get_user_profile(
-    current_user: TokenData = Depends(auth_service.get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get user profile including last login time"""
-    from services.login_history_service import login_history_service
-    
-    last_login = await login_history_service.get_last_login_time(db, current_user.user_id)
-    login_count = await login_history_service.get_login_count(db, current_user.user_id)
-    
-    return {
-        "user_id": current_user.user_id,
-        "email": current_user.email,
-        "role": current_user.role,
-        "last_login": last_login.isoformat() if last_login else None,
-        "total_logins": login_count
-    }

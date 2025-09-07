@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, validator
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer,
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
                         String, Text)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -12,6 +12,15 @@ from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
+class StandardResponse(BaseModel):
+    success: bool
+    message: str
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    status_code: int
+
+    class Config:
+        from_attributes = True
 class UserRole(str, Enum):
     ADMIN = "admin"
     USER = "user"
@@ -33,12 +42,28 @@ class LoginHistory(Base):
     user = relationship("User", back_populates="login_history")
     
 class LoginHistoryResponse(BaseModel):
+    id: int
     login_time: datetime
-    ip_address: Optional[str]
-    user_agent: Optional[str]
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    login_status: str
+    failure_reason: Optional[str] = None
+    user_id: int
     
     class Config:
         from_attributes = True
+        
+class LoginStatsResponse(BaseModel):
+    total_logins: int
+    last_login: Optional[datetime] = None
+    successful_logins: int
+    failed_logins: int
+
+class UserLoginHistoryResponse(BaseModel):
+    user_id: int
+    email: str
+    login_history: List[LoginHistoryResponse]
+    stats: LoginStatsResponse
 class User(Base):
     __tablename__ = "users"
     __allow_unmapped__ = True
@@ -81,8 +106,27 @@ class FileUploadRecord(Base):
     file_metadata = Column(JSON, nullable=True)
     upload_ip = Column(String(45), nullable=True)
     upload_status = Column(String(20), default="success", nullable=False)
+    
+    processing_time_ms = Column(Float, default=0.0)  
+    version = Column(Integer, default=1) 
+    is_current_version = Column(Boolean, default=True) 
+    parent_version_id = Column(Integer, ForeignKey("file_uploads.id", ondelete="SET NULL"), nullable=True)
+    
+    previous_versions = relationship("FileUploadRecord", 
+                                   foreign_keys=[parent_version_id],
+                                   remote_side=[id],
+                                   backref="next_versions")
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    # Index for better performance
+    __table_args__ = (
+        Index('ix_file_upload_user_id', 'user_id'),
+        Index('ix_file_upload_s3_key', 's3_key'),
+        Index('ix_file_upload_version', 'version'),
+        Index('ix_file_upload_current_version', 'is_current_version'),
+        Index('ix_file_upload_s3_key_version', 's3_key', 'version', unique=True),
+    )
 
 # Pydantic Models for API
 class Book(BaseModel):
@@ -148,12 +192,11 @@ class UploadError(BaseModel):
     error: str
     status_code: int
 
-class MultipleFileUploadResponse(BaseModel):
-    uploaded_files: List[UploadedFileInfo]
-    total_uploaded: int
-    total_failed: int
+class MultipleFileUploadResponse(StandardResponse):
+    uploaded_files: Optional[List[UploadedFileInfo]] = None
+    total_uploaded: int = 0
+    total_failed: int = 0
     errors: Optional[List[UploadError]] = None
-    message: str
 
 class FileUploadRecordResponse(BaseModel):
     id: int
@@ -173,16 +216,14 @@ class FileUploadRecordResponse(BaseModel):
     updated_at: str
 
 class FileUploadListResponse(BaseModel):
-    data: List[FileUploadRecordResponse]
-    total_count: int
-    page: int
-    limit: int
-    total_pages: int
+    data: Optional[List[Dict[str, Any]]] = None
+    total_count: int = 0
+    page: int = 1
+    limit: int = 100
+    total_pages: int = 1
 
 class DeleteFileResponse(BaseModel):
-    message: str
-    deleted_key: str
-    success: bool
+    deleted_key: Optional[str] = None
 
 # Renamed Pydantic User models to avoid conflicts
 class UserBase(BaseModel):
@@ -259,3 +300,115 @@ class TokenWithLoginInfo(BaseModel):
     
     class Config:
         from_attributes = True
+        
+
+class UserResponseData(BaseModel):
+    id: int
+    email: str
+    first_name: str
+    last_name: str
+    role: str
+    is_active: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class UserListResponse(BaseModel):
+    success: bool
+    message: str
+    data: Dict[str, Any] 
+    status_code: int
+
+    class Config:
+        from_attributes = True
+        
+        
+class HealthResponse(BaseModel):
+    success: bool = Field(..., description="Whether the health check was successful")
+    status: str = Field(..., description="Overall status (healthy/unhealthy)")
+    database: str = Field(..., description="Database type")
+    connection: str = Field(..., description="Connection status")
+    database_name: Optional[str] = Field(None, description="Database name")
+    postgresql_version: Optional[str] = Field(None, description="PostgreSQL version")
+    environment: str = Field(..., description="Environment name")
+    response_time_ms: float = Field(..., description="Response time in milliseconds")
+    error: Optional[str] = Field(None, description="Error message if any")
+    status_code: int = Field(..., description="HTTP status code")
+
+    class Config:
+        from_attributes = True
+
+class SimpleHealthResponse(BaseModel):
+    success: bool
+    status: str
+    service: str
+    message: Optional[str] = None
+    error: Optional[str] = None
+    status_code: int
+
+    class Config:
+        from_attributes = True
+
+class DBHealthResponse(BaseModel):
+    success: bool
+    status: str
+    message: str
+    error: Optional[str] = None
+    status_code: int
+
+    class Config:
+        from_attributes = True
+        
+class UploadRecordResponse(BaseModel):
+    id: int
+    original_filename: str
+    s3_key: str
+    s3_url: str
+    file_size: int
+    content_type: str
+    file_content: Optional[str] = None
+    score: float
+    folder_path: Optional[str] = None
+    user_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    upload_ip: Optional[str] = None
+    upload_status: str
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class UploadListResponse(BaseModel):
+    success: bool
+    message: str
+    data: Dict[str, Any]  
+    error: Optional[str] = None
+    status_code: int
+
+    class Config:
+        from_attributes = True
+        
+class FileVersionInfo(BaseModel):
+    id: int
+    original_filename: str
+    s3_key: str
+    s3_url: str
+    file_size: int
+    content_type: str
+    score: float
+    processing_time_ms: float
+    version: int
+    is_current_version: bool
+    parent_version_id: Optional[int] = None
+    user_id: str
+    created_at: Optional[str] = None
+    upload_status: str
+
+class FileVersionHistoryResponse(StandardResponse):
+    data: Optional[Dict[str, Any]] = None 
+
+class FileRestoreResponse(StandardResponse):
+    data: Optional[Dict[str, Any]] = None
