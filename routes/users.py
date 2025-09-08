@@ -580,9 +580,4 @@ async def get_user_login_history_admin(
             detail="Failed to retrieve login history"
         )
 
-        logger.error(f"Error getting user login history: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve login history"
-        )
 
