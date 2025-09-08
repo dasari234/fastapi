@@ -13,7 +13,8 @@ from sqlalchemy.sql import text
 
 from config import (DEBUG, MAX_OVERFLOW, POOL_RECYCLE, POOL_SIZE, POOL_TIMEOUT,
                     SQLALCHEMY_DATABASE_URL, SSL_MODE)
-from models.schemas import Base
+from schemas.base import Base
+
 
 logger = logging.getLogger(__name__)
 

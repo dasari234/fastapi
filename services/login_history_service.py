@@ -2,19 +2,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func
 from datetime import datetime
 from typing import Optional, Tuple, List
-from models.schemas import LoginHistory
+
 import logging
 
+from schemas.users import LoginHistory
+
 logger = logging.getLogger(__name__)
+
+
 class LoginHistoryService:
     @staticmethod
     async def create_login_record(
-        db: AsyncSession, 
-        user_id: int, 
-        ip_address: str = None, 
+        db: AsyncSession,
+        user_id: int,
+        ip_address: str = None,
         user_agent: str = None,
         login_status: str = "success",
-        failure_reason: str = None
+        failure_reason: str = None,
     ) -> Tuple[Optional[LoginHistory], int]:
         """Create login history record with standardized response"""
         try:
@@ -23,7 +27,7 @@ class LoginHistoryService:
                 ip_address=ip_address,
                 user_agent=user_agent,
                 login_status=login_status,
-                failure_reason=failure_reason
+                failure_reason=failure_reason,
             )
             db.add(login_record)
             await db.commit()
@@ -35,14 +39,16 @@ class LoginHistoryService:
             return None, 500
 
     @staticmethod
-    async def get_last_login_time(db: AsyncSession, user_id: int) -> Tuple[Optional[datetime], int]:
+    async def get_last_login_time(
+        db: AsyncSession, user_id: int
+    ) -> Tuple[Optional[datetime], int]:
         """Get the most recent successful login time for a user with standardized response"""
         try:
             result = await db.execute(
                 select(LoginHistory.login_time)
                 .where(
                     LoginHistory.user_id == user_id,
-                    LoginHistory.login_status == "success"
+                    LoginHistory.login_status == "success",
                 )
                 .order_by(desc(LoginHistory.login_time))
                 .limit(1)
@@ -54,14 +60,15 @@ class LoginHistoryService:
             return None, 500
 
     @staticmethod
-    async def get_login_count(db: AsyncSession, user_id: int) -> Tuple[Optional[int], int]:
+    async def get_login_count(
+        db: AsyncSession, user_id: int
+    ) -> Tuple[Optional[int], int]:
         """Get total successful login count with standardized response"""
         try:
             result = await db.execute(
-                select(func.count(LoginHistory.id))
-                .where(
+                select(func.count(LoginHistory.id)).where(
                     LoginHistory.user_id == user_id,
-                    LoginHistory.login_status == "success"
+                    LoginHistory.login_status == "success",
                 )
             )
             count = result.scalar() or 0
@@ -72,9 +79,7 @@ class LoginHistoryService:
 
     @staticmethod
     async def get_user_login_history(
-        db: AsyncSession, 
-        user_id: int, 
-        limit: int = 10
+        db: AsyncSession, user_id: int, limit: int = 10
     ) -> Tuple[Optional[List[dict]], int]:
         """Get user login history with standardized response"""
         try:
@@ -85,32 +90,35 @@ class LoginHistoryService:
                 .limit(limit)
             )
             history_records = result.scalars().all()
-            
+
             history_data = [
                 {
-                    "login_time": record.login_time.isoformat() if record.login_time else None,
+                    "login_time": record.login_time.isoformat()
+                    if record.login_time
+                    else None,
                     "ip_address": record.ip_address,
                     "user_agent": record.user_agent,
                     "login_status": record.login_status,
-                    "failure_reason": record.failure_reason
+                    "failure_reason": record.failure_reason,
                 }
                 for record in history_records
             ]
-            
+
             return history_data, 200
         except Exception as e:
             logger.error(f"Error getting login history for user {user_id}: {e}")
             return None, 500
 
     @staticmethod
-    async def get_failed_login_count(db: AsyncSession, user_id: int) -> Tuple[Optional[int], int]:
+    async def get_failed_login_count(
+        db: AsyncSession, user_id: int
+    ) -> Tuple[Optional[int], int]:
         """Get total failed login count with standardized response"""
         try:
             result = await db.execute(
-                select(func.count(LoginHistory.id))
-                .where(
+                select(func.count(LoginHistory.id)).where(
                     LoginHistory.user_id == user_id,
-                    LoginHistory.login_status == "failed"
+                    LoginHistory.login_status == "failed",
                 )
             )
             count = result.scalar() or 0
@@ -121,40 +129,43 @@ class LoginHistoryService:
 
     @staticmethod
     async def get_recent_failed_logins(
-        db: AsyncSession, 
-        user_id: int, 
-        hours: int = 24
+        db: AsyncSession, user_id: int, hours: int = 24
     ) -> Tuple[Optional[List[dict]], int]:
         """Get recent failed login attempts within specified hours"""
         try:
             from datetime import datetime, timedelta
+
             time_threshold = datetime.utcnow() - timedelta(hours=hours)
-            
+
             result = await db.execute(
                 select(LoginHistory)
                 .where(
                     LoginHistory.user_id == user_id,
                     LoginHistory.login_status == "failed",
-                    LoginHistory.login_time >= time_threshold
+                    LoginHistory.login_time >= time_threshold,
                 )
                 .order_by(desc(LoginHistory.login_time))
             )
-            
+
             failed_logins = result.scalars().all()
-            
+
             login_data = [
                 {
-                    "login_time": login.login_time.isoformat() if login.login_time else None,
+                    "login_time": login.login_time.isoformat()
+                    if login.login_time
+                    else None,
                     "ip_address": login.ip_address,
                     "user_agent": login.user_agent,
-                    "failure_reason": login.failure_reason
+                    "failure_reason": login.failure_reason,
                 }
                 for login in failed_logins
             ]
-            
+
             return login_data, 200
         except Exception as e:
             logger.error(f"Error getting recent failed logins for user {user_id}: {e}")
             return None, 500
+
+
 # Create global instance
 login_history_service = LoginHistoryService()

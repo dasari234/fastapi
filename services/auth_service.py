@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM,
                     REFRESH_TOKEN_EXPIRE_DAYS, SECRET_KEY)
-from models.schemas import TokenData
+from schemas.auth import TokenData
 
 logger = logging.getLogger(__name__)
 

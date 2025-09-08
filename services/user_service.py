@@ -5,8 +5,8 @@ from fastapi import status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db_context
-from models.schemas import User, UserCreate, UserRole, UserUpdate
+from database.database import get_db_context
+from schemas.users import UserCreate, UserRole, UserUpdate, User
 from services.auth_service import auth_service
 
 logger = logging.getLogger(__name__)

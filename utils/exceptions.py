@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from models.schemas import ErrorResponse
+from schemas.base import ErrorResponse
 
 logger = logging.getLogger(__name__)
 

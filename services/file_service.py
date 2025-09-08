@@ -5,8 +5,9 @@ from fastapi import status
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db_context
-from models.schemas import FileUploadRecord, User
+from database.database import get_db_context
+from schemas.files import FileUploadRecord
+from schemas.users import User
 
 logger = logging.getLogger(__name__)
 
