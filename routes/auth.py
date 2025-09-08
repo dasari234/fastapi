@@ -108,6 +108,7 @@ async def login(
         
         # Verify password
         is_valid, error = auth_service.verify_password(form_data.password, user_data["password_hash"])
+        
         if not is_valid:
             # Record failed login attempt
             await login_history_service.create_login_record(
@@ -151,6 +152,9 @@ async def login(
             login_status="success"
         )
         
+        # Get the previous last login time BEFORE the current login is recorded
+        previous_last_login, _ = await login_history_service.get_last_login_time(db, user_data["id"])
+        
         # Create tokens and return response
         access_token_result, access_status = auth_service.create_access_token(
             data={"user_id": user_data["id"], "email": user_data["email"], "role": user_data["role"]}
@@ -174,6 +178,8 @@ async def login(
         
         # Remove password hash from response
         user_data.pop("password_hash", None)
+        
+        user_data["last_login"] = previous_last_login.isoformat() if previous_last_login else None
         
         response_data = {
             "access_token": access_token_result,

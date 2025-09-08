@@ -1,14 +1,14 @@
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator, validator
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
-                        String, Text)
+from pydantic import BaseModel, EmailStr, Field, validator
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey,
+                        Index, Integer, String, Text)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from sqlalchemy.sql import func
 
 Base = declarative_base()
 
@@ -64,6 +64,7 @@ class UserLoginHistoryResponse(BaseModel):
     email: str
     login_history: List[LoginHistoryResponse]
     stats: LoginStatsResponse
+    
 class User(Base):
     __tablename__ = "users"
     __allow_unmapped__ = True
@@ -78,17 +79,6 @@ class User(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     login_history = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan")
-
-class BookModel(Base):
-    __tablename__ = "books"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    book_id = Column(String(32), unique=True, index=True, nullable=False)
-    name = Column(String(255), nullable=False)
-    genre = Column(String(20), nullable=False)
-    price = Column(Float, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 class FileUploadRecord(Base):
     __tablename__ = "file_uploads"
@@ -128,47 +118,14 @@ class FileUploadRecord(Base):
         Index('ix_file_upload_s3_key_version', 's3_key', 'version', unique=True),
     )
 
-# Pydantic Models for API
-class Book(BaseModel):
-    name: str = Field(..., min_length=1, max_length=255, example="The Great Gatsby")
-    genre: Literal["fiction", "non-fiction"] = Field(..., example="fiction")
-    price: float = Field(..., gt=0, description="Price must be greater than 0", example=12.99)
-
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_empty(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("Name cannot be empty or whitespace only")
-        return v.strip()
-
-class BookUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=255, example="Updated Book Name")
-    genre: Optional[Literal["fiction", "non-fiction"]] = Field(None, example="fiction")
-    price: Optional[float] = Field(None, gt=0, description="Price must be greater than 0", example=15.99)
-
-    @field_validator("name")
-    @classmethod
-    def name_must_not_be_empty(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and not v.strip():
-            raise ValueError("Name cannot be empty or whitespace only")
-        return v.strip() if v else v
-
-class BookResponse(BaseModel):
-    book_id: str
-    name: str
-    genre: str
-    price: float
-    created_at: str
-    updated_at: str
-
-class HealthResponse(BaseModel):
-    status: str
-    database: str
-    connection: str
-    database_name: str
-    postgresql_version: str
-    environment: str
-    response_time_ms: float
+# class HealthResponse(BaseModel):
+#     status: str
+#     database: str
+#     connection: str
+#     database_name: str
+#     postgresql_version: str
+#     environment: str
+#     response_time_ms: float
 
 class ErrorResponse(BaseModel):
     error: str
@@ -285,12 +242,12 @@ class PasswordReset(BaseModel):
     token: str
     new_password: str
 
-class UserListResponse(BaseModel):
-    users: List[UserResponse]
-    total_count: int
-    page: int
-    limit: int
-    total_pages: int
+# class UserListResponse(BaseModel):
+#     users: List[UserResponse]
+#     total_count: int
+#     page: int
+#     limit: int
+#     total_pages: int
     
 class TokenWithLoginInfo(BaseModel):
     access_token: str
@@ -311,6 +268,7 @@ class UserResponseData(BaseModel):
     is_active: bool
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+    last_login: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -416,3 +374,6 @@ class FileRestoreResponse(StandardResponse):
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str
+    
+
+    

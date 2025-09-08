@@ -1,4 +1,3 @@
-# routes/users.py
 import logging
 from typing import Optional, Tuple
 
@@ -45,7 +44,7 @@ async def get_current_user_profile(
                 status_code=auth_status
             )
         
-        # Now you can safely access current_user.user_id
+        # safely access current_user.user_id
         user_id = current_user.user_id
         
         # Get user details from database
@@ -58,9 +57,13 @@ async def get_current_user_profile(
                 error="User not found",
                 status_code=user_status
             )
+            
+        last_login, last_login_status = await login_history_service.get_last_login_time(db, current_user.user_id)
         
         # Remove sensitive information
         user_data.pop("password_hash", None)
+        
+        user_data["last_login"] = last_login.isoformat() if last_login else None
         
         return StandardResponse(
             success=True,
