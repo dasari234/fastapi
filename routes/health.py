@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
 from config import ENVIRONMENT
-from database.database import get_db
+from database import get_db
 from schemas.health import HealthResponse, SimpleHealthResponse, DBHealthResponse
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.database import get_db
+from database import get_db
 from schemas.base import StandardResponse
 from schemas.users import (
     LoginStatsResponse,

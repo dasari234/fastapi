@@ -5,7 +5,7 @@ from fastapi import status
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.database import get_db_context
+from database import get_db_context
 from schemas.files import FileUploadRecord
 from schemas.users import User
 

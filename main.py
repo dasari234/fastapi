@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from config import DEBUG, ENVIRONMENT, VERSION
 from middleware.cors import setup_cors
-from database.database import close_db, init_db
+from database import close_db, init_db
 from routes.auth import router as auth_router
 from routes.files import router as files_router
 from routes.health import router as health_router
