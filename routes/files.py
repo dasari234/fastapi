@@ -78,11 +78,11 @@ class ContentProcessor:
         Returns: (raw_content, text_content, score, processing_time_ms, error_message, status_code)
         """
         start_time = time.time()
+        raw_content = None
         try:
-            # Read raw content
+            # Read raw content - this is where the processing time should be measured
             raw_content = await file.read()
             
-            # For binary files (like PDF), don't attempt to decode as text
             text_content = ""
             score = 0.0
             
@@ -99,7 +99,7 @@ class ContentProcessor:
             else:
                 # For binary files (PDF, images, etc.), use a basic score based on file size
                 # Cap the score at 100
-                score = min(100.0, len(raw_content) / 10000)
+                score = min(100.0, len(raw_content) / (1024 * 1024))  # 1 point per MB
             
             processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
             

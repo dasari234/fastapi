@@ -149,22 +149,40 @@ async def login(
             login_status="success"
         )
         
-        # Create tokens and return response
-        access_token = auth_service.create_access_token(
+        # Create tokens and return response - HANDLE TUPLES HERE
+        access_token_result, access_status = auth_service.create_access_token(
             data={"user_id": user_data["id"], "email": user_data["email"], "role": user_data["role"]}
         )
         
-        refresh_token = auth_service.create_refresh_token(
+        if access_status != status.HTTP_200_OK or not access_token_result:
+            logger.error(f"Failed to create access token: status={access_status}")
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Failed to create access token",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        refresh_token_result, refresh_status = auth_service.create_refresh_token(
             data={"user_id": user_data["id"], "email": user_data["email"]}
         )
+        
+        if refresh_status != status.HTTP_200_OK or not refresh_token_result:
+            logger.error(f"Failed to create refresh token: status={refresh_status}")
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Failed to create refresh token",
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
         # Remove password hash from response
         user_data.pop("password_hash", None)
         
         response_data = {
-            "access_token": access_token,
+            "access_token": access_token_result,  # Use the token string, not the tuple
             "token_type": "bearer",
-            "refresh_token": refresh_token,
+            "refresh_token": refresh_token_result,  # Use the token string, not the tuple
             "user": user_data
         }
         
@@ -184,7 +202,6 @@ async def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         
-         
 @router.post(
     "/refresh",
     response_model=Token,
@@ -197,37 +214,65 @@ async def refresh_token(
     """Refresh access token using refresh token"""
     try:
         print("token ***********************", request.refresh_token)
-        payload = auth_service.verify_token(request.refresh_token)  # Access from request body
-        print("verified token ***********************", payload)
-        user_id = payload.get("user_id")
-        email = payload.get("email")
         
-        if not user_id or not email:
+        # Verify token returns a tuple (payload, status_code)
+        payload, status_code = auth_service.verify_token(request.refresh_token)
+        print("verified token result ***********************", payload, status_code)
+        
+        # Check if token verification was successful
+        if status_code != status.HTTP_200_OK or not payload:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid refresh token"
             )
         
-        # Create new access token
-        access_token = auth_service.create_access_token(
-            data={"user_id": user_id, "email": email, "role": payload.get("role", "user")}
+        # Now extract data from the payload
+        user_id = payload.get("user_id")
+        email = payload.get("email")
+        user_role = payload.get("role", "user")
+        
+        if not user_id or not email:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token payload"
+            )
+        
+        # Create new access token (returns tuple: (token, status_code))
+        access_token_result, access_status = auth_service.create_access_token(
+            data={"user_id": user_id, "email": email, "role": user_role}
         )
         
-        # Create new refresh token
-        new_refresh_token = auth_service.create_refresh_token(
+        if access_status != status.HTTP_200_OK or not access_token_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create access token"
+            )
+        
+        # Create new refresh token (returns tuple: (token, status_code))
+        refresh_token_result, refresh_status = auth_service.create_refresh_token(
             data={"user_id": user_id, "email": email}
         )
         
+        if refresh_status != status.HTTP_200_OK or not refresh_token_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create refresh token"
+            )
+        
+        print("Generated access_token:", access_token_result)
+        print("Generated refresh_token:", refresh_token_result)
+        
+        # Return just the token strings
         return {
-            "access_token": access_token,
+            "access_token": access_token_result,
             "token_type": "bearer",
-            "refresh_token": new_refresh_token
+            "refresh_token": refresh_token_result
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token refresh failed: {e}")
+        logger.error(f"Token refresh failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid refresh token"
