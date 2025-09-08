@@ -286,3 +286,4 @@ class UserService:
             
 # Create global instance
 user_service = UserService()
+
