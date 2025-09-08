@@ -236,3 +236,5 @@ async def get_database_stats() -> dict:
     except Exception as e:
         logger.error(f"Failed to get database stats: {e}")
         return {"status": "error", "error": str(e)}
+    
+    
