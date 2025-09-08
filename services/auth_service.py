@@ -38,8 +38,6 @@ class AuthService:
         """Get password hash with status indication"""
         try:
             hashed_password = pwd_context.hash(password)
-            print(f"Generated hash: {hashed_password}")
-            print(f"Hash type: {type(hashed_password)}")
             return hashed_password
         except Exception as e:
             logger.error(f"Password hashing failed: {e}")

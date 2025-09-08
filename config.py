@@ -27,25 +27,27 @@ if not DATABASE_URL:
 parsed_url = urlparse(DATABASE_URL)
 query_params = {}
 if parsed_url.query:
-    query_params = dict(param.split('=') for param in parsed_url.query.split('&') if '=' in param)
+    query_params = dict(
+        param.split("=") for param in parsed_url.query.split("&") if "=" in param
+    )
 
 # Remove sslmode from query parameters if present and handle it separately
-ssl_mode = query_params.pop('sslmode', 'prefer')
-if 'localhost' in parsed_url.hostname or '127.0.0.1' in parsed_url.hostname:
-    ssl_mode = 'prefer'
+ssl_mode = query_params.pop("sslmode", "prefer")
+if "localhost" in parsed_url.hostname or "127.0.0.1" in parsed_url.hostname:
+    ssl_mode = "prefer"
 
 # Reconstruct the URL without sslmode in query
-new_query = '&'.join([f"{k}={v}" for k, v in query_params.items()])
+new_query = "&".join([f"{k}={v}" for k, v in query_params.items()])
 clean_url = parsed_url._replace(query=new_query if new_query else None).geturl()
 
 # Ensure we're using the asyncpg driver
-if clean_url.startswith('postgres://'):
-    clean_url = clean_url.replace('postgres://', 'postgresql+asyncpg://')
-elif clean_url.startswith('postgresql://'):
-    clean_url = clean_url.replace('postgresql://', 'postgresql+asyncpg://')
-elif not clean_url.startswith('postgresql+asyncpg://'):
-    clean_url = 'postgresql+asyncpg://' + clean_url.split('://', 1)[1]
-    
+if clean_url.startswith("postgres://"):
+    clean_url = clean_url.replace("postgres://", "postgresql+asyncpg://")
+elif clean_url.startswith("postgresql://"):
+    clean_url = clean_url.replace("postgresql://", "postgresql+asyncpg://")
+elif not clean_url.startswith("postgresql+asyncpg://"):
+    clean_url = "postgresql+asyncpg://" + clean_url.split("://", 1)[1]
+
 # Application settings
 ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
 DEBUG = ENVIRONMENT == "development"
@@ -81,3 +83,13 @@ POOL_RECYCLE = 1800
 
 # SSL configuration for database
 SSL_MODE = ssl_mode
+
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
+
+MAX_CONTENT_LENGTH_FOR_SCORING = 1024 * 1024 
+CHUNK_SIZE = 8192

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models.database import get_db
 from models.schemas import (LoginStatsResponse, StandardResponse,
                             UserLoginHistoryResponse, UserRole, UserUpdate)
+from routes.dependencies import get_current_user, require_role
 from services import login_history_service
 from services.auth_service import TokenData, auth_service
 from services.user_service import user_service
@@ -15,16 +16,6 @@ from services.user_service import user_service
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Users"], prefix="/users")
 
-# Role-based dependency
-def require_role(required_role: UserRole):
-    async def role_checker(current_user: TokenData = Depends(auth_service.get_current_user)):
-        if current_user.role != required_role and current_user.role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Insufficient permissions"
-            )
-        return current_user
-    return role_checker
 
 @router.get(
     "/me",
@@ -37,7 +28,7 @@ def require_role(required_role: UserRole):
     }
 )
 async def get_current_user_profile(
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get current user profile"""
@@ -579,5 +570,4 @@ async def get_user_login_history_admin(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve login history"
         )
-
 

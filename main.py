@@ -3,13 +3,12 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import DEBUG, ENVIRONMENT, VERSION
+from middleware.cors import setup_cors
 from models.database import close_db, init_db
 from routes.auth import router as auth_router
-from routes.books import router as books_router
 from routes.files import router as files_router
 from routes.health import router as health_router
 from routes.root import router as root_router
@@ -40,24 +39,6 @@ async def lifespan(app: FastAPI):
     await close_db()
     logger.info("Database connection closed")
     
-# --- CORS Configuration ---
-def get_cors_origins():
-    """Get CORS origins based on environment."""
-    if ENVIRONMENT == "production":
-        # In production, specify your actual frontend domains
-        return [
-            "https://yourdomain.com",
-            "https://www.yourdomain.com",
-            # Add your production frontend URLs here
-        ]
-    else:
-        # Development origins
-        return [
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://127.0.0.1:3000",
-            "http://127.0.0.1:5173",
-        ]
 
 app = FastAPI(
     title="Bookstore API",
@@ -67,21 +48,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=get_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=["*"]
-)
+# Setup CORS
+setup_cors(app)
 
 # Include routers
 app.include_router(root_router)
 app.include_router(health_router)
 app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 app.include_router(users_router, prefix="/api/v1", tags=["users"])
-app.include_router(books_router, prefix="/api/v1", tags=["books"])
 app.include_router(files_router, prefix="/api/v1", tags=["files"])
 
 @app.middleware("http")
@@ -109,3 +83,5 @@ if __name__ == "__main__":
         reload=DEBUG,
         log_level="info" if not DEBUG else "debug",
     )
+    
+    

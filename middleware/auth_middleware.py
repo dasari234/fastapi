@@ -1,6 +1,7 @@
 import logging
-from fastapi import Request, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from fastapi import HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from services.auth_service import auth_service
 
@@ -39,3 +40,5 @@ class JWTBearer(HTTPBearer):
 
 # Create global instance
 jwt_bearer = JWTBearer()
+
+

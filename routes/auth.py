@@ -209,11 +209,8 @@ async def refresh_token(
 ):
     """Refresh access token using refresh token"""
     try:
-        print("token ***********************", request.refresh_token)
-        
         # Verify token returns a tuple (payload, status_code)
         payload, status_code = auth_service.verify_token(request.refresh_token)
-        print("verified token result ***********************", payload, status_code)
         
         # Check if token verification was successful
         if status_code != status.HTTP_200_OK or not payload:
@@ -254,9 +251,6 @@ async def refresh_token(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create refresh token"
             )
-        
-        print("Generated access_token:", access_token_result)
-        print("Generated refresh_token:", refresh_token_result)
         
         # Return just the token strings
         return {

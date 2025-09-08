@@ -1,227 +1,23 @@
-import json
 import logging
-import time
-import uuid
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-import chardet
 from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      Request, UploadFile, status)
-from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
-from models.database import get_db
 from models.schemas import (DeleteFileResponse, MultipleFileUploadResponse,
                             StandardResponse, UploadedFileInfo, UploadError)
-from services.auth_service import TokenData, auth_service
+from routes.dependencies import get_current_user, get_db_session
+from services.auth_service import TokenData
 from services.file_service import file_service
 from services.s3_service import s3_service
+from utils.content_processor import ContentProcessor
+from utils.file_validator import FileValidator
+from utils.metadata_handler import MetadataHandler
+from utils.security import generate_safe_filename, get_client_ip
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
-
-# Constants
-MAX_CONTENT_LENGTH_FOR_SCORING = 1024 * 1024  # 1MB limit for text content analysis
-CHUNK_SIZE = 8192  # 8KB chunks for memory-efficient reading
-
-class FileValidator:
-    """File validation utility class"""
-    
-    @staticmethod
-    def validate_file_basic(file: UploadFile) -> Tuple[bool, Optional[str], Optional[int]]:
-        """Basic file validation (size and type)"""
-        if not file.filename:
-            return False, "Filename is required", status.HTTP_400_BAD_REQUEST
-            
-        # Check file size
-        if file.size and file.size > MAX_FILE_SIZE:
-            return False, f"File size too large. Maximum allowed: {MAX_FILE_SIZE // (1024 * 1024)}MB", status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
-
-        # Check file extension
-        file_extension = Path(file.filename).suffix.lower().lstrip('.')
-        if not file_extension:
-            return False, "File must have an extension", status.HTTP_400_BAD_REQUEST
-            
-        allowed_extensions = []
-        for extensions in ALLOWED_EXTENSIONS.values():
-            allowed_extensions.extend(extensions)
-
-        if file_extension not in allowed_extensions:
-            return False, f"File type '{file_extension}' not allowed. Allowed types: {', '.join(allowed_extensions)}", status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
-
-        return True, None, None
-
-    @staticmethod
-    def validate_filename(filename: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-        """Sanitize and validate filename"""
-        if not filename:
-            return None, "Filename cannot be empty", status.HTTP_400_BAD_REQUEST
-        
-        # Remove/replace invalid characters
-        invalid_chars = '<>:"/\\|?*'
-        sanitized = ''.join(c if c not in invalid_chars else '_' for c in filename)
-        
-        # Ensure filename isn't too long
-        if len(sanitized) > 255:
-            sanitized = sanitized[:255]
-            
-        return sanitized, None, None
-
-class ContentProcessor:
-    """Content processing utility class with timing"""
-    
-    @staticmethod
-    async def read_file_content_safely(file: UploadFile) -> Tuple[Optional[bytes], Optional[str], float, float, Optional[str], Optional[int]]:
-        """
-        Safely read file content with encoding detection, scoring, and timing
-        Returns: (raw_content, text_content, score, processing_time_ms, error_message, status_code)
-        """
-        start_time = time.time()
-        raw_content = None
-        try:
-            # Read raw content - this is where the processing time should be measured
-            raw_content = await file.read()
-            
-            text_content = ""
-            score = 0.0
-            
-            # Only attempt text processing for text-based files
-            if file.content_type and file.content_type.startswith('text/'):
-                # Limit content size for text processing to avoid memory issues
-                content_for_analysis = raw_content[:MAX_CONTENT_LENGTH_FOR_SCORING]
-                
-                # Detect encoding for text files
-                text_content = await ContentProcessor._decode_content(content_for_analysis)
-                
-                # Calculate score only for text content
-                score = ContentProcessor.calculate_file_score(text_content)
-            else:
-                # For binary files (PDF, images, etc.), use a basic score based on file size
-                # Cap the score at 100
-                score = min(100.0, len(raw_content) / (1024 * 1024))  # 1 point per MB
-            
-            processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
-            
-            return raw_content, text_content, score, processing_time, None, None
-            
-        except Exception as e:
-            processing_time = (time.time() - start_time) * 1000
-            logger.warning(f"Error processing file content: {e}")
-            return raw_content, "", 0.0, processing_time, f"Error processing file content: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR
-
-
-    @staticmethod
-    async def _decode_content(content: bytes) -> str:
-        """Decode content with proper encoding detection"""
-        if not content:
-            return ""
-            
-        try:
-            # First try UTF-8 (most common)
-            return content.decode('utf-8')
-        except UnicodeDecodeError:
-            try:
-                # Use chardet to detect encoding
-                detected = await run_in_threadpool(chardet.detect, content)
-                encoding = detected.get('encoding', 'utf-8') if detected else 'utf-8'
-                confidence = detected.get('confidence', 0) if detected else 0
-                
-                if confidence > 0.7:  # Only use if reasonably confident
-                    return content.decode(encoding, errors='replace')
-                else:
-                    # Fallback to latin-1 which can decode any byte sequence
-                    return content.decode('latin-1', errors='replace')
-                    
-            except Exception as e:
-                logger.warning(f"Encoding detection failed: {e}")
-                # Final fallback
-                return content.decode('utf-8', errors='ignore')
-
-    @staticmethod
-    def calculate_file_score(file_content: str) -> float:
-        """Calculate a score based on file content with improved algorithm"""
-        if not file_content or not file_content.strip():
-            return 0.0
-        
-        try:
-            # Content metrics
-            word_count = len(file_content.split())
-            char_count = len(file_content)
-            line_count = file_content.count('\n') + 1
-            
-            # Quality indicators
-            unique_words = len(set(file_content.lower().split()))
-            avg_word_length = char_count / max(word_count, 1)
-            
-            # Calculate score with improved algorithm
-            base_score = min(50.0, (word_count * 0.05) + (char_count * 0.005))
-            complexity_bonus = min(30.0, (unique_words * 0.1) + (avg_word_length * 2))
-            structure_bonus = min(20.0, line_count * 0.2)
-            
-            total_score = base_score + complexity_bonus + structure_bonus
-            return round(min(100.0, total_score), 2)
-            
-        except Exception as e:
-            logger.warning(f"Error calculating file score: {e}")
-            return 0.0
-
-class MetadataHandler:
-    """Metadata handling utility class"""
-    
-    @staticmethod
-    def parse_metadata(metadata_str: Optional[str]) -> Tuple[Optional[Dict[str, Any]], Optional[str], Optional[int]]:
-        """Safely parse metadata JSON string"""
-        if not metadata_str:
-            return None, None, None
-            
-        try:
-            parsed = json.loads(metadata_str)
-            # Validate that it's a dictionary
-            if not isinstance(parsed, dict):
-                return None, "Metadata must be a JSON object", status.HTTP_400_BAD_REQUEST
-            return parsed, None, None
-        except json.JSONDecodeError as e:
-            return None, f"Invalid metadata JSON: {str(e)}", status.HTTP_400_BAD_REQUEST
-        except Exception as e:
-            return None, f"Unexpected error parsing metadata: {str(e)}", status.HTTP_500_INTERNAL_SERVER_ERROR
-
-
-async def get_client_ip(request: Request) -> str:
-    """Get client IP address with proper header checking"""
-    # Check for forwarded headers (common in load balancer setups)
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        # Take the first IP in the chain
-        return forwarded_for.split(",")[0].strip()
-    
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
-    
-    # Fallback to direct client IP
-    return request.client.host if request.client else "unknown"
-
-async def generate_safe_filename(
-    original_filename: str, 
-    custom_filename: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-    """Generate a safe, unique filename"""
-    file_extension = Path(original_filename).suffix.lower()
-    
-    if custom_filename:
-        # Sanitize custom filename
-        safe_name, error, status_code = FileValidator.validate_filename(custom_filename)
-        if error:
-            return None, error, status_code
-        filename = f"{safe_name}{file_extension}"
-    else:
-        # Generate UUID-based filename
-        filename = f"{uuid.uuid4().hex}{file_extension}"
-    
-    return filename, None, None
-
 
 @router.post(
     "/upload",
@@ -241,7 +37,8 @@ async def upload_file(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string"
     ),
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Upload a single file to AWS S3 bucket and store record in PostgreSQL"""
     try:
@@ -273,7 +70,7 @@ async def upload_file(
                 errors=[UploadError(filename=file.filename or "unknown", error=error_msg, status_code=error_code)]
             )
         
-        # Process file content - now expecting 6 return values
+        # Process file content
         raw_content, text_content, score, processing_time_ms, content_error, content_status = await ContentProcessor.read_file_content_safely(file)
         
         if content_error:
@@ -428,7 +225,8 @@ async def upload_multiple_files(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string for all files"
     ),
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Upload multiple files to AWS S3 bucket and store records in PostgreSQL"""
     # Extract TokenData from tuple first
@@ -488,7 +286,7 @@ async def upload_multiple_files(
                     ))
                     continue
                 
-                # Process file content - now expecting 6 values
+                # Process file content
                 raw_content, text_content, score, processing_time_ms, content_error, content_status = await ContentProcessor.read_file_content_safely(file)
                 
                 if content_error:
@@ -629,8 +427,8 @@ async def list_upload_records(
     show_all_versions: bool = Query(False, description="Show all versions or only current"),
     limit: int = Query(10, ge=1, le=1000, description="Number of records per page"),
     page: int = Query(1, ge=1, description="Page number"),
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user_dependency()),
-    db: AsyncSession = Depends(get_db)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """List file upload records with version control and search capability"""
     try:
@@ -710,7 +508,8 @@ async def list_upload_records(
 )
 async def delete_upload_record(
     s3_key: str,
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Delete file upload record from PostgreSQL database and S3"""
     # Extract TokenData from tuple
@@ -806,4 +605,6 @@ async def delete_upload_record(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             deleted_key=s3_key
         )
+        
+        
         

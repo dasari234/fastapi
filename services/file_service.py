@@ -289,7 +289,7 @@ class FileService:
         """List only current versions of files with filtering, search and pagination"""
         async def _list_current_versions(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
-                # DEBUG: Log the received parameters
+                
                 logger.info(f"list_current_versions received: user_id={user_id}, folder={folder}, search={search}, limit={limit}, offset={offset}")
                 # First get the file records (current versions only)
                 query = select(FileUploadRecord).where(FileUploadRecord.is_current_version == True)
@@ -475,7 +475,7 @@ class FileService:
                 query = select(FileUploadRecord)
                 
                 if user_id:
-                    # DEBUG: Check what user_id values exist in the database
+                    
                     all_user_ids_result = await session.execute(
                         select(FileUploadRecord.user_id).distinct()
                     )
