@@ -10,13 +10,14 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      Request, UploadFile, status)
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import ALLOWED_EXTENSIONS, MAX_FILE_SIZE
 from models.database import get_db
-from models.schemas import (StandardResponse, UploadedFileInfo, UploadError,
-                           MultipleFileUploadResponse, DeleteFileResponse)
+from models.schemas import (DeleteFileResponse, MultipleFileUploadResponse,
+                            StandardResponse, UploadedFileInfo, UploadError)
 from services.auth_service import TokenData, auth_service
-from services.s3_service import s3_service
 from services.file_service import file_service
+from services.s3_service import s3_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
@@ -626,14 +627,14 @@ async def list_upload_records(
     folder: Optional[str] = Query(None, description="Filter by folder"),
     search: Optional[str] = Query(None, description="Search across filename, content, user details"),
     show_all_versions: bool = Query(False, description="Show all versions or only current"),
-    limit: int = Query(10, ge=1, le=1000, description="Number of records per page"),  # Changed default to 10
+    limit: int = Query(10, ge=1, le=1000, description="Number of records per page"),
     page: int = Query(1, ge=1, description="Page number"),
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user_dependency()),
     db: AsyncSession = Depends(get_db)
 ):
     """List file upload records with version control and search capability"""
     try:
-        # Extract TokenData from tuple
+        # Extract TokenData from tuple           
         current_user, status_code = current_user_result
         if status_code != status.HTTP_200_OK or not current_user:
             return StandardResponse(
@@ -647,11 +648,12 @@ async def list_upload_records(
         if current_user.role != "admin": 
             user_id = str(current_user.user_id)
             
+        # Handle empty search parameter
+        if search == "" or search == " ":
+            search = None
+            
         offset = (page - 1) * limit
-        
-        # DEBUG: Log the parameters being passed
-        logger.info(f"Calling service with: user_id={user_id}, folder={folder}, search={search}, limit={limit}, offset={offset}")
-        
+               
         # Get uploads based on version filter
         if show_all_versions:
             result, status_code = await file_service.list_uploads(user_id, folder, search, limit, offset, db)
@@ -708,9 +710,20 @@ async def list_upload_records(
 )
 async def delete_upload_record(
     s3_key: str,
-    current_user: TokenData = Depends(auth_service.get_current_user)
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user)
 ):
     """Delete file upload record from PostgreSQL database and S3"""
+    # Extract TokenData from tuple
+    current_user, auth_status = current_user_result
+    if auth_status != status.HTTP_200_OK or not current_user:
+        return DeleteFileResponse(
+            success=False,
+            message="Authentication failed",
+            error="Invalid or expired token",
+            status_code=auth_status,
+            deleted_key=None
+        )
+        
     if not s3_key or s3_key.strip() == "":
         return DeleteFileResponse(
             success=False,
@@ -740,8 +753,8 @@ async def delete_upload_record(
                 deleted_key=s3_key
             )
 
-        # Check if user has permission to delete (admin or owner)
-        if current_user.role != "admin" and record.get("user_id") != str(current_user.user_id):
+        # Check permissions - non-admin users can only delete their own files
+        if current_user.role != "admin" and record["user_id"] != str(current_user.user_id):
             return DeleteFileResponse(
                 success=False,
                 message="Permission denied",
@@ -750,34 +763,42 @@ async def delete_upload_record(
                 deleted_key=s3_key
             )
 
-        # Delete from S3
-        s3_success = await s3_service.delete_file(s3_key)
-        if not s3_success:
-            # Log warning but continue with database deletion
-            logger.warning(f"Failed to delete file from S3: {s3_key}")
-
-        # Delete from database
-        db_success, db_status = await file_service.delete_upload_record(s3_key)
-        
-        if db_success:
-            logger.info(f"Successfully deleted file and record: {s3_key}")
+        # Delete from S3 first
+        s3_result, s3_status = await s3_service.delete_file(s3_key)
+        if s3_status != status.HTTP_200_OK:
+            # If S3 deletion fails, don't proceed with DB deletion
+            error_msg = s3_result.get("error", "Unknown S3 error") if isinstance(s3_result, dict) else "S3 deletion failed"
             return DeleteFileResponse(
-                success=True,
-                message="File and record deleted successfully",
-                status_code=status.HTTP_200_OK,
+                success=False,
+                message="S3 deletion failed",
+                error=error_msg,
+                status_code=s3_status,
                 deleted_key=s3_key
             )
-        else:
+
+        # Delete from database
+        db_result, db_status = await file_service.delete_upload_record(s3_key)
+        if db_status != status.HTTP_200_OK:
+            # If DB deletion fails but S3 was successful, log the inconsistency
+            logger.error(f"Inconsistent state: S3 file deleted but DB record remains for key: {s3_key}")
             return DeleteFileResponse(
                 success=False,
                 message="Database deletion failed",
-                error="Failed to delete database record",
+                error="File deleted from S3 but database record could not be removed",
                 status_code=db_status,
                 deleted_key=s3_key
             )
 
+        logger.info(f"Successfully deleted file: {s3_key} by user: {current_user.user_id}")
+        return DeleteFileResponse(
+            success=True,
+            message="File deleted successfully",
+            deleted_key=s3_key,
+            status_code=status.HTTP_200_OK
+        )
+
     except Exception as e:
-        logger.error(f"Delete failed for {s3_key}: {e}", exc_info=True)
+        logger.error(f"Delete operation failed: {e}", exc_info=True)
         return DeleteFileResponse(
             success=False,
             message="Delete operation failed",
@@ -786,267 +807,3 @@ async def delete_upload_record(
             deleted_key=s3_key
         )
         
-        
-@router.post(
-    "/{s3_key}/restore/{version_id}",
-    response_model=StandardResponse,
-    summary="Restore file version",
-    responses={
-        201: {"description": "Version restored successfully"},
-        403: {"description": "Forbidden - insufficient permissions"},
-        404: {"description": "Version not found"},
-        500: {"description": "Internal server error"}
-    }
-)
-async def restore_file_version(
-    s3_key: str,
-    version_id: int,
-    current_user: TokenData = Depends(auth_service.get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Restore a specific version of a file"""
-    try:
-        is_admin = current_user.role == "admin"
-        
-        restored_version, status_code = await file_service.restore_version(
-            version_id, str(current_user.user_id), is_admin, db
-        )
-        
-        if status_code == status.HTTP_404_NOT_FOUND:
-            return StandardResponse(
-                success=False,
-                message="Version not found",
-                error="Version not found or access denied",
-                status_code=status.HTTP_404_NOT_FOUND
-            )
-        
-        if status_code == status.HTTP_403_FORBIDDEN:
-            return StandardResponse(
-                success=False,
-                message="Permission denied",
-                error="You can only restore your own files",
-                status_code=status.HTTP_403_FORBIDDEN
-            )
-        
-        if status_code != status.HTTP_201_CREATED:
-            return StandardResponse(
-                success=False,
-                message="Failed to restore version",
-                error="Internal server error",
-                status_code=status_code
-            )
-        
-        return StandardResponse(
-            success=True,
-            message="Version restored successfully",
-            data=restored_version,
-            status_code=status.HTTP_201_CREATED
-        )
-        
-    except Exception as e:
-        logger.error(f"Error restoring version {version_id}: {e}")
-        return StandardResponse(
-            success=False,
-            message="Failed to restore version",
-            error=f"Internal server error: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        
-
-@router.get(
-    "/{s3_key}/versions",
-    response_model=StandardResponse,
-    summary="Get file version history",
-    responses={
-        200: {"description": "Version history retrieved successfully"},
-        403: {"description": "Forbidden - insufficient permissions"},
-        404: {"description": "File not found"},
-        500: {"description": "Internal server error"}
-    }
-)
-async def get_file_versions(
-    s3_key: str,
-    current_user: TokenData = Depends(auth_service.get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get version history for a specific file"""
-    try:
-        # Check if user is admin or owns the file
-        is_admin = current_user.role == "admin"
-        user_id_for_query = None if is_admin else str(current_user.user_id)
-        
-        versions, status_code = await file_service.get_file_versions(
-            s3_key, user_id_for_query, db
-        )
-        
-        if status_code == status.HTTP_404_NOT_FOUND:
-            return StandardResponse(
-                success=False,
-                message="File not found",
-                error="File not found or access denied",
-                status_code=status.HTTP_404_NOT_FOUND
-            )
-        
-        if status_code != status.HTTP_200_OK:
-            return StandardResponse(
-                success=False,
-                message="Failed to retrieve version history",
-                error="Internal server error",
-                status_code=status_code
-            )
-        
-        return StandardResponse(
-            success=True,
-            message="Version history retrieved successfully",
-            data={"versions": versions, "total_versions": len(versions)},
-            status_code=status.HTTP_200_OK
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting version history for {s3_key}: {e}")
-        return StandardResponse(
-            success=False,
-            message="Failed to retrieve version history",
-            error=f"Internal server error: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@router.get(
-    "/{s3_key}/current",
-    response_model=StandardResponse,
-    summary="Get current file version",
-    responses={
-        200: {"description": "Current version retrieved successfully"},
-        403: {"description": "Forbidden - insufficient permissions"},
-        404: {"description": "File not found"},
-        500: {"description": "Internal server error"}
-    }
-)
-async def get_current_file_version(
-    s3_key: str,
-    current_user: TokenData = Depends(auth_service.get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Get the current version of a file"""
-    try:
-        # Check if user is admin or owns the file
-        is_admin = current_user.role == "admin"
-        user_id_for_query = None if is_admin else str(current_user.user_id)
-        
-        current_version, status_code = await file_service.get_current_version(
-            s3_key, user_id_for_query, db
-        )
-        
-        if status_code == status.HTTP_404_NOT_FOUND:
-            return StandardResponse(
-                success=False,
-                message="File not found",
-                error="File not found or access denied",
-                status_code=status.HTTP_404_NOT_FOUND
-            )
-        
-        if status_code != status.HTTP_200_OK:
-            return StandardResponse(
-                success=False,
-                message="Failed to retrieve current version",
-                error="Internal server error",
-                status_code=status_code
-            )
-        
-        return StandardResponse(
-            success=True,
-            message="Current version retrieved successfully",
-            data=current_version,
-            status_code=status.HTTP_200_OK
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting current version for {s3_key}: {e}")
-        return StandardResponse(
-            success=False,
-            message="Failed to retrieve current version",
-            error=f"Internal server error: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        
-        
-@router.get(
-    "/admin/all-files",
-    response_model=StandardResponse,
-    summary="Admin view - List all files (all users)",
-    responses={
-        200: {"description": "Records retrieved successfully"},
-        403: {"description": "Forbidden - insufficient permissions"},
-        500: {"description": "Internal server error"}
-    }
-)
-async def admin_list_all_files(
-    folder: Optional[str] = Query(None, description="Filter by folder"),
-    show_all_versions: bool = Query(False, description="Show all versions or only current"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of records per page"),
-    page: int = Query(1, ge=1, description="Page number"),
-    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Admin endpoint to list all files from all users"""
-    try:
-        # Extract TokenData from tuple
-        current_user, auth_status = current_user_result
-        if auth_status != status.HTTP_200_OK or not current_user:
-            return StandardResponse(
-                success=False,
-                message="Authentication failed",
-                error="Invalid or expired token",
-                status_code=auth_status
-            )
-        
-        # Only allow admins
-        if current_user.role != "admin":
-            return StandardResponse(
-                success=False,
-                message="Permission denied",
-                error="Admin access required",
-                status_code=status.HTTP_403_FORBIDDEN
-            )
-            
-        offset = (page - 1) * limit
-        
-        # Get uploads based on version filter (no user_id filter for admin)
-        if show_all_versions:
-            result, status_code = await file_service.list_uploads(None, folder, limit, offset)
-        else:
-            # Only show current versions
-            result, status_code = await file_service.list_current_versions(None, folder, limit, offset)
-        
-        if status_code != status.HTTP_200_OK:
-            return StandardResponse(
-                success=False,
-                message="Failed to retrieve upload records",
-                error="Database query failed",
-                status_code=status_code
-            )
-        
-        total_pages = max(1, (result["total_count"] + limit - 1) // limit)
-
-        return StandardResponse(
-            success=True,
-            message="All files retrieved successfully",
-            data={
-                "records": result["records"],
-                "total_count": result["total_count"],
-                "page": page,
-                "limit": limit,
-                "total_pages": total_pages,
-                "show_all_versions": show_all_versions
-            },
-            status_code=status.HTTP_200_OK
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to list all files: {e}", exc_info=True)
-        return StandardResponse(
-            success=False,
-            message="Failed to retrieve all files",
-            error=f"Internal server error: {str(e)}",
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )

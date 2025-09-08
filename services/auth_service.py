@@ -3,17 +3,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import jwt
-from jwt import ExpiredSignatureError, InvalidTokenError
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, status
 from fastapi.security import OAuth2PasswordBearer
+from jwt import ExpiredSignatureError, InvalidTokenError
 from passlib.context import CryptContext
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM,
                     REFRESH_TOKEN_EXPIRE_DAYS, SECRET_KEY)
-from models.database import get_db
-from models.schemas import TokenData, User, UserRole
+from models.schemas import TokenData
 
 logger = logging.getLogger(__name__)
 
@@ -114,63 +112,42 @@ class AuthService:
             logger.error(f"Token verification failed: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    @staticmethod
-    async def get_current_user(
-        token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
-    ) -> Tuple[Optional[TokenData], int]:
-        """Get current user with status codes"""
+    async def get_current_user(self, token: str = Depends(oauth2_scheme)) -> Tuple[Optional[TokenData], int]:
+        """Get current user from token - returns (user_data, status_code)"""
         try:
             # Verify token
-            payload, status_code = AuthService.verify_token(token)
+            payload, status_code = self.verify_token(token)
             if status_code != status.HTTP_200_OK or not payload:
-                return None, status_code
-
-            user_id: int = payload.get("user_id")
-            email: str = payload.get("email")
-            role: str = payload.get("role")
-
-            # Validate token payload
-            if user_id is None or email is None or role is None:
-                logger.warning("Invalid token payload: missing required fields")
                 return None, status.HTTP_401_UNAUTHORIZED
-
-            # Verify user exists and is active
-            result = await db.execute(
-                select(User).where(User.id == user_id, User.email == email)
+            
+            # Extract user data
+            user_id = payload.get("user_id")
+            email = payload.get("email")
+            role = payload.get("role", "user")
+            
+            if not user_id or not email:
+                return None, status.HTTP_401_UNAUTHORIZED
+            
+            # Create TokenData object
+            user_data = TokenData(
+                user_id=user_id,
+                email=email,
+                role=role
             )
-            user = result.scalar_one_or_none()
-
-            if not user:
-                logger.warning(f"User not found: id={user_id}, email={email}")
-                return None, status.HTTP_401_UNAUTHORIZED
-
-            if not user.is_active:
-                logger.warning(f"User account inactive: id={user_id}")
-                return None, status.HTTP_401_UNAUTHORIZED
-
-            # Validate role
-            try:
-                user_role = UserRole(role)
-            except ValueError:
-                logger.warning(f"Invalid role in token: {role}")
-                return None, status.HTTP_401_UNAUTHORIZED
-
-            return TokenData(user_id=user_id, email=email, role=user_role), status.HTTP_200_OK
-
-        except HTTPException:
-            raise  # Re-raise existing HTTP exceptions
+            
+            return user_data, status.HTTP_200_OK
+            
         except Exception as e:
             logger.error(f"Error getting current user: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    @staticmethod
     async def authenticate_user(
-        email: str, password: str, db: AsyncSession
+        self, email: str, password: str, db: AsyncSession
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Authenticate user with status codes"""
         try:
             from services.user_service import user_service
-            
+
             # Get user by email
             user_data, status_code = await user_service.get_user_by_email(email, db)
             
@@ -178,7 +155,7 @@ class AuthService:
                 return None, status.HTTP_401_UNAUTHORIZED
 
             # Verify password
-            is_valid, error = AuthService.verify_password(password, user_data["password_hash"])
+            is_valid, error = self.verify_password(password, user_data["password_hash"])
             if not is_valid:
                 logger.warning(f"Invalid password for user: {email}")
                 return None, status.HTTP_401_UNAUTHORIZED
@@ -198,7 +175,17 @@ class AuthService:
         except Exception as e:
             logger.error(f"Authentication error for user {email}: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+    def get_current_user_dependency(self):
+        """Return a dependency function"""
+        async def _get_current_user(
+            token: str = Depends(oauth2_scheme)
+        ) -> Tuple[Optional[TokenData], int]:
+            return await self.get_current_user(token)
+        return _get_current_user
 
 
 # Create global instance
 auth_service = AuthService()
+
+

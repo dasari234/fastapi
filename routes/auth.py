@@ -3,12 +3,14 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from models.database import get_db
-from models.schemas import ( PasswordReset, PasswordResetRequest, RefreshTokenRequest, StandardResponse, Token,  
+from models.schemas import (PasswordReset, PasswordResetRequest,
+                            RefreshTokenRequest, StandardResponse, Token,
                             UserCreate)
 from services.auth_service import auth_service
-from services.user_service import user_service
 from services.login_history_service import login_history_service
+from services.user_service import user_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Authentication"], prefix="/auth")
@@ -83,7 +85,7 @@ async def login(
             # Record failed login attempt for non-existent user
             await login_history_service.create_login_record(
                 db=db,
-                user_id=None,  # No user ID for non-existent users
+                user_id=None,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 login_status="failed",
@@ -149,18 +151,15 @@ async def login(
             login_status="success"
         )
         
-        # Create tokens and return response - HANDLE TUPLES HERE
+        # Create tokens and return response
         access_token_result, access_status = auth_service.create_access_token(
             data={"user_id": user_data["id"], "email": user_data["email"], "role": user_data["role"]}
         )
         
         if access_status != status.HTTP_200_OK or not access_token_result:
-            logger.error(f"Failed to create access token: status={access_status}")
-            return StandardResponse(
-                success=False,
-                message="Login failed",
-                error="Failed to create access token",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create access token"
             )
         
         refresh_token_result, refresh_status = auth_service.create_refresh_token(
@@ -168,21 +167,18 @@ async def login(
         )
         
         if refresh_status != status.HTTP_200_OK or not refresh_token_result:
-            logger.error(f"Failed to create refresh token: status={refresh_status}")
-            return StandardResponse(
-                success=False,
-                message="Login failed",
-                error="Failed to create refresh token",
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create refresh token"
             )
         
         # Remove password hash from response
         user_data.pop("password_hash", None)
         
         response_data = {
-            "access_token": access_token_result,  # Use the token string, not the tuple
+            "access_token": access_token_result,
             "token_type": "bearer",
-            "refresh_token": refresh_token_result,  # Use the token string, not the tuple
+            "refresh_token": refresh_token_result,
             "user": user_data
         }
         
@@ -201,14 +197,14 @@ async def login(
             error="Internal server error",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-        
+
 @router.post(
     "/refresh",
     response_model=Token,
     summary="Refresh access token"
 )
 async def refresh_token(
-    request: RefreshTokenRequest,
+    request: RefreshTokenRequest, 
     db: AsyncSession = Depends(get_db)
 ):
     """Refresh access token using refresh token"""
@@ -292,4 +288,7 @@ async def request_password_reset(request: PasswordResetRequest):
 )
 async def reset_password(reset_data: PasswordReset):
     """Reset password with token"""
-    return {"message": "Password reset successful (implementation required)"}
+    return {"message": "Password reset successful (implementation required)"}@router.post(
+    "/reset-password",
+    summary="Reset password"
+)

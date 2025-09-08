@@ -1,15 +1,16 @@
 # routes/users.py
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import get_db
-from models.schemas import LoginStatsResponse, StandardResponse, UserLoginHistoryResponse, UserRole, UserUpdate
+from models.schemas import (LoginStatsResponse, StandardResponse,
+                            UserLoginHistoryResponse, UserRole, UserUpdate)
 from services import login_history_service
 from services.auth_service import TokenData, auth_service
 from services.user_service import user_service
-from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Users"], prefix="/users")
@@ -32,33 +33,43 @@ def require_role(required_role: UserRole):
     responses={
         200: {"description": "User profile retrieved successfully"},
         401: {"description": "Unauthorized - invalid or missing token"},
-        404: {"description": "User not found"},
         500: {"description": "Internal server error"}
     }
 )
 async def get_current_user_profile(
-    current_user: TokenData = Depends(auth_service.get_current_user),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(auth_service.get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get current authenticated user's profile"""
+    """Get current user profile"""
     try:
-        user_data, status_code = await user_service.get_user_by_id(current_user.user_id, db)
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
         
-        if status_code == status.HTTP_404_NOT_FOUND:
+        # Check if authentication was successful
+        if auth_status != status.HTTP_200_OK or not current_user:
             return StandardResponse(
                 success=False,
-                message="User not found",
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status
+            )
+        
+        # Now you can safely access current_user.user_id
+        user_id = current_user.user_id
+        
+        # Get user details from database
+        user_data, user_status = await user_service.get_user_by_id(user_id, db)
+        
+        if user_status != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Failed to retrieve user data",
                 error="User not found",
-                status_code=status.HTTP_404_NOT_FOUND
+                status_code=user_status
             )
         
-        if status_code != status.HTTP_200_OK:
-            return StandardResponse(
-                success=False,
-                message="Failed to retrieve user profile",
-                error="Internal server error",
-                status_code=status_code
-            )
+        # Remove sensitive information
+        user_data.pop("password_hash", None)
         
         return StandardResponse(
             success=True,
@@ -68,7 +79,7 @@ async def get_current_user_profile(
         )
         
     except Exception as e:
-        logger.error(f"Error getting user profile: {e}")
+        logger.error(f"Failed to retrieve user profile: {e}", exc_info=True)
         return StandardResponse(
             success=False,
             message="Failed to retrieve user profile",
@@ -563,6 +574,12 @@ async def get_user_login_history_admin(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error getting user login history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve login history"
+        )
+
         logger.error(f"Error getting user login history: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

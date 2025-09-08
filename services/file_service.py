@@ -1,8 +1,9 @@
 import logging
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi import status
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import status
 
 from models.database import get_db_context
 from models.schemas import FileUploadRecord, User
@@ -469,9 +470,7 @@ class FileService:
         """List file uploads with filtering, search and pagination (all versions)"""
         async def _list_uploads(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
-                # DEBUG: Log the incoming parameters
-                logger.info(f"list_uploads called with: user_id={user_id}, folder={folder}, search={search}, limit={limit}, offset={offset}")
-                
+               
                 # First get the file records (all versions)
                 query = select(FileUploadRecord)
                 
@@ -500,10 +499,7 @@ class FileService:
                     )
                     query = query.where(search_filter)
                     logger.info(f"Applying search filter: {search}")
-                
-                # DEBUG: Check the generated SQL
-                logger.info(f"Query: {query}")
-                
+                               
                 # Count total (all versions)
                 count_query = query.with_only_columns(func.count()).order_by(None)
                 total_count_result = await session.execute(count_query)
@@ -734,4 +730,5 @@ class FileService:
 
 
 # Create global instance
+file_service = FileService()
 file_service = FileService()
