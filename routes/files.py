@@ -534,7 +534,7 @@ async def delete_upload_record(
 
     try:
         # First check if record exists in database
-        record, record_status = await file_service.get_upload_record(s3_key)
+        record, record_status = await file_service.get_upload_record(s3_key, db)
         if record_status == status.HTTP_404_NOT_FOUND:
             return DeleteFileResponse(
                 success=False,
@@ -563,21 +563,33 @@ async def delete_upload_record(
             )
 
         # Delete from S3 first
-        s3_result, s3_status = await s3_service.delete_file(s3_key)
-        if s3_status != status.HTTP_200_OK:
+        s3_success, s3_status = await s3_service.delete_file(s3_key)
+        if not s3_success:
             # If S3 deletion fails, don't proceed with DB deletion
-            error_msg = s3_result.get("error", "Unknown S3 error") if isinstance(s3_result, dict) else "S3 deletion failed"
+            error_msg = "S3 deletion failed"
+            if isinstance(s3_status, dict) and "error" in s3_status:
+                error_msg = s3_status["error"]
+            
             return DeleteFileResponse(
                 success=False,
                 message="S3 deletion failed",
                 error=error_msg,
-                status_code=s3_status,
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 deleted_key=s3_key
             )
 
         # Delete from database
-        db_result, db_status = await file_service.delete_upload_record(s3_key)
-        if db_status != status.HTTP_200_OK:
+        db_success, db_status = await file_service.delete_upload_record(s3_key, db)
+        
+        if db_success:
+            logger.info(f"Successfully deleted file and record: {s3_key} by user: {current_user.user_id}")
+            return DeleteFileResponse(
+                success=True,
+                message="File and record deleted successfully",
+                status_code=status.HTTP_200_OK,
+                deleted_key=s3_key
+            )
+        else:
             # If DB deletion fails but S3 was successful, log the inconsistency
             logger.error(f"Inconsistent state: S3 file deleted but DB record remains for key: {s3_key}")
             return DeleteFileResponse(
@@ -588,14 +600,6 @@ async def delete_upload_record(
                 deleted_key=s3_key
             )
 
-        logger.info(f"Successfully deleted file: {s3_key} by user: {current_user.user_id}")
-        return DeleteFileResponse(
-            success=True,
-            message="File deleted successfully",
-            deleted_key=s3_key,
-            status_code=status.HTTP_200_OK
-        )
-
     except Exception as e:
         logger.error(f"Delete operation failed: {e}", exc_info=True)
         return DeleteFileResponse(
@@ -605,6 +609,5 @@ async def delete_upload_record(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             deleted_key=s3_key
         )
-        
         
         
