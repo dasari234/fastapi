@@ -1,22 +1,12 @@
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey,
+                        Index, Integer, String, Text, func)
+from sqlalchemy.orm import relationship
 
 from .base import Base, StandardResponse
-from sqlalchemy import (
-    JSON,
-    Boolean,
-    Column,
-    DateTime,
-    Float,
-    ForeignKey,
-    Index,
-    Integer,
-    String,
-    Text,
-    func,
-)
-from sqlalchemy.orm import relationship
 
 
 class FileUploadRecord(Base):
@@ -312,3 +302,20 @@ class FileRestoreResponse(StandardResponse):
                 "status_code": 200,
             }
         }
+
+class PresignedUrlResponse(BaseModel):
+    url: str
+    expires_at: datetime
+    filename: str
+    content_type: Optional[str] = None
+    file_size: Optional[int] = None
+
+class FileInfoResponse(BaseModel):
+    s3_key: str
+    original_filename: str
+    content_type: str
+    file_size: int
+    upload_date: Optional[datetime] = None
+    can_download: bool = True
+    can_view: bool = True
+    

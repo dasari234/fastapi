@@ -1,27 +1,15 @@
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from fastapi import (
-    APIRouter,
-    Depends,
-    File,
-    Form,
-    HTTPException,
-    Query,
-    Request,
-    UploadFile,
-    status,
-)
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
+                     Request, UploadFile, status)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from schemas.files import (
-    DeleteFileResponse,
-    MultipleFileUploadResponse,
-    UploadedFileInfo,
-    UploadError,
-)
-from schemas.base import StandardResponse
 from routes.dependencies import get_current_user, get_db_session
+from schemas.base import StandardResponse
+from schemas.files import (DeleteFileResponse, MultipleFileUploadResponse,
+                           UploadedFileInfo, UploadError)
 from services.auth_service import TokenData
 from services.file_service import file_service
 from services.s3_service import s3_service
@@ -720,3 +708,244 @@ async def delete_upload_record(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             deleted_key=s3_key,
         )
+
+
+@router.get(
+    "/{s3_key:path}/download-url",
+    response_model=StandardResponse,
+    summary="Generate download URL for file",
+    responses={
+        200: {"description": "Download URL generated successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "File not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def generate_download_url(
+    s3_key: str,
+    expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """Generate pre-signed URL for file download"""
+    try:
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed"
+            )
+        
+        # Check if user has permission to access this file
+        record, record_status = await file_service.get_upload_record(s3_key, db)
+        if record_status == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found"
+            )
+        
+        # Check permissions - non-admin users can only access their own files
+        if current_user.role != "admin" and record["user_id"] != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only access your own files"
+            )
+        
+        # Generate pre-signed URL for download
+        download_url, url_status = await s3_service.generate_presigned_url(
+            s3_key, expiration, download=True
+        )
+        
+        if url_status != status.HTTP_200_OK or not download_url:
+            raise HTTPException(
+                status_code=url_status,
+                detail="Failed to generate download URL"
+            )
+        
+        # Get file info for response
+        file_info, info_status = await s3_service.get_file_info(s3_key)
+        
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expiration)
+        
+        
+        response_data = {
+            "url": download_url,
+            "expires_at": expires_at.isoformat(),
+            "filename": record["original_filename"],
+            "content_type": file_info["content_type"] if file_info else record["content_type"],
+            "file_size": file_info["content_length"] if file_info else record["file_size"]
+        }
+        
+        return StandardResponse(
+            success=True,
+            message="Download URL generated successfully",
+            data=response_data,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate download URL for {s3_key}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate download URL: {str(e)}"
+        )
+        
+        
+@router.get(
+    "/{s3_key:path}/view-url",
+    response_model=StandardResponse,
+    summary="Generate view URL for file",
+    responses={
+        200: {"description": "View URL generated successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "File not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def generate_view_url(
+    s3_key: str,
+    expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """Generate pre-signed URL for file viewing (inline)"""
+    try:
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed"
+            )
+        
+        # Check if user has permission to access this file
+        record, record_status = await file_service.get_upload_record(s3_key, db)
+        if record_status == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found"
+            )
+        
+        # Check permissions - non-admin users can only access their own files
+        if current_user.role != "admin" and record["user_id"] != str(current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only access your own files"
+            )
+        
+        # Generate pre-signed URL for viewing (inline)
+        view_url, url_status = await s3_service.generate_presigned_url(
+            s3_key, expiration, download=False
+        )
+        
+        if url_status != status.HTTP_200_OK or not view_url:
+            raise HTTPException(
+                status_code=url_status,
+                detail="Failed to generate view URL"
+            )
+        
+        # Get file info for response
+        file_info, info_status = await s3_service.get_file_info(s3_key)
+        
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=expiration)
+        
+        response_data = {
+            "url": view_url,
+            "expires_at": expires_at.isoformat(),
+            "filename": record["original_filename"],
+            "content_type": file_info["content_type"] if file_info else record["content_type"],
+            "file_size": file_info["content_length"] if file_info else record["file_size"]
+        }
+        
+        return StandardResponse(
+            success=True,
+            message="View URL generated successfully",
+            data=response_data,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate view URL for {s3_key}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate view URL: {str(e)}"
+        )
+
+@router.get(
+    "/{s3_key:path}/info",
+    response_model=StandardResponse,
+    summary="Get file information",
+    responses={
+        200: {"description": "File information retrieved successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "File not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_file_info(
+    s3_key: str,
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session)
+):
+    """Get file information and access permissions"""
+    try:
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed"
+            )
+        
+        # Check if file exists in database
+        record, record_status = await file_service.get_upload_record(s3_key, db)
+        if record_status == status.HTTP_404_NOT_FOUND:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="File not found"
+            )
+        
+        # Check permissions
+        can_access = (
+            current_user.role == "admin" or 
+            record["user_id"] == str(current_user.user_id)
+        )
+        
+        if not can_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only access your own files"
+            )
+        
+        # Get file info from S3
+        file_info, info_status = await s3_service.get_file_info(s3_key)
+        
+        response_data = {
+            "s3_key": s3_key,
+            "original_filename": record["original_filename"],
+            "content_type": file_info["content_type"] if file_info else record["content_type"],
+            "file_size": file_info["content_length"] if file_info else record["file_size"],
+            "upload_date": record["created_at"],
+            "can_download": True,
+            "can_view": True
+        }
+        
+        return StandardResponse(
+            success=True,
+            message="File information retrieved successfully",
+            data=response_data,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get file info for {s3_key}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get file information: {str(e)}"
+        )
+        
+        
