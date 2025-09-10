@@ -21,24 +21,18 @@ class FileUploadRecord(Base):
     file_content = Column(Text, nullable=True)
     score = Column(Float, default=0.0)
     folder_path = Column(String(255), nullable=True)
-    user_id = Column(String(50), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     file_metadata = Column(JSON, nullable=True)
     upload_ip = Column(String(45), nullable=True)
     upload_status = Column(String(20), default="success", nullable=False)
 
     processing_time_ms = Column(Float, default=0.0)
-    version = Column(Integer, default=1)
-    is_current_version = Column(Boolean, default=True)
+    version = Column(Integer, default=1, nullable=False)
+    is_current_version = Column(Boolean, default=True, nullable=False)
     parent_version_id = Column(
         Integer, ForeignKey("file_uploads.id", ondelete="SET NULL"), nullable=True
     )
-
-    previous_versions = relationship(
-        "FileUploadRecord",
-        foreign_keys=[parent_version_id],
-        remote_side=[id],
-        backref="next_versions",
-    )
+    version_comment = Column(Text, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -49,6 +43,10 @@ class FileUploadRecord(Base):
         onupdate=func.now(),
         nullable=False,
     )
+    
+    # REMOVE THIS LINE - it conflicts with the relationship in User class
+    # uploading_user = relationship("User", back_populates="file_uploads")
+
     # Index for better performance
     __table_args__ = (
         Index("ix_file_upload_user_id", "user_id"),
@@ -56,9 +54,44 @@ class FileUploadRecord(Base):
         Index("ix_file_upload_version", "version"),
         Index("ix_file_upload_current_version", "is_current_version"),
         Index("ix_file_upload_s3_key_version", "s3_key", "version", unique=True),
+        Index("ix_file_upload_created_at", "created_at"),
+        Index("ix_file_upload_parent_version", "parent_version_id"),
     )
 
+    # Relationship to parent version (self-referential)
+    parent_version = relationship(
+        "FileUploadRecord",
+        foreign_keys=[parent_version_id],
+        remote_side=[id],
+        backref="child_versions",
+    )
 
+    def to_dict(self):
+        """Convert model to dictionary"""
+        return {
+            "id": self.id,
+            "original_filename": self.original_filename,
+            "s3_key": self.s3_key,
+            "s3_url": self.s3_url,
+            "file_size": self.file_size,
+            "content_type": self.content_type,
+            "score": self.score,
+            "folder_path": self.folder_path,
+            "user_id": self.user_id,
+            "upload_ip": self.upload_ip,
+            "upload_status": self.upload_status,
+            "processing_time_ms": self.processing_time_ms,
+            "version": self.version,
+            "is_current_version": self.is_current_version,
+            "parent_version_id": self.parent_version_id,
+            "version_comment": self.version_comment,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "has_content": bool(self.file_content),
+            "metadata": self.file_metadata or {}
+        }
+        
+        
 class UploadedFileInfo(BaseModel):
     """Basic file upload information"""
 
@@ -212,96 +245,96 @@ class DeleteFileResponse(BaseModel):
         json_schema_extra = {"example": {"deleted_key": "uploads/document_abc123.pdf"}}
 
 
-class FileVersionInfo(BaseModel):
-    """File version information"""
+# class FileVersionInfo(BaseModel):
+#     """File version information"""
 
-    id: int = Field(..., description="Version ID")
-    original_filename: str = Field(..., description="Original filename")
-    s3_key: str = Field(..., description="S3 object key")
-    s3_url: str = Field(..., description="Presigned URL")
-    file_size: int = Field(..., description="File size in bytes")
-    content_type: str = Field(..., description="File content type")
-    score: float = Field(..., description="Content quality score")
-    processing_time_ms: float = Field(
-        ..., description="Processing time in milliseconds"
-    )
-    version: int = Field(..., description="Version number")
-    is_current_version: bool = Field(
-        ..., description="Whether this is the current version"
-    )
-    parent_version_id: Optional[int] = Field(None, description="Parent version ID")
-    user_id: str = Field(..., description="User ID who uploaded this version")
-    created_at: Optional[str] = Field(None, description="Creation timestamp")
-    upload_status: str = Field(..., description="Upload status")
+#     id: int = Field(..., description="Version ID")
+#     original_filename: str = Field(..., description="Original filename")
+#     s3_key: str = Field(..., description="S3 object key")
+#     s3_url: str = Field(..., description="Presigned URL")
+#     file_size: int = Field(..., description="File size in bytes")
+#     content_type: str = Field(..., description="File content type")
+#     score: float = Field(..., description="Content quality score")
+#     processing_time_ms: float = Field(
+#         ..., description="Processing time in milliseconds"
+#     )
+#     version: int = Field(..., description="Version number")
+#     is_current_version: bool = Field(
+#         ..., description="Whether this is the current version"
+#     )
+#     parent_version_id: Optional[int] = Field(None, description="Parent version ID")
+#     user_id: str = Field(..., description="User ID who uploaded this version")
+#     created_at: Optional[str] = Field(None, description="Creation timestamp")
+#     upload_status: str = Field(..., description="Upload status")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "id": 1,
-                "original_filename": "document.pdf",
-                "s3_key": "uploads/document_abc123.pdf",
-                "s3_url": "https://bucket.s3.amazonaws.com/uploads/document_abc123.pdf",
-                "file_size": 1024000,
-                "content_type": "application/pdf",
-                "score": 85.5,
-                "processing_time_ms": 150.0,
-                "version": 1,
-                "is_current_version": True,
-                "parent_version_id": None,
-                "user_id": "1",
-                "created_at": "2023-01-01T00:00:00Z",
-                "upload_status": "success",
-            }
-        }
-
-
-class FileVersionHistoryResponse(StandardResponse):
-    """File version history response"""
-
-    data: Optional[Dict[str, Any]] = Field(None, description="Version history data")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "Version history retrieved",
-                "data": {
-                    "versions": [
-                        {
-                            "id": 1,
-                            "original_filename": "document.pdf",
-                            "s3_key": "uploads/document_abc123.pdf",
-                            "version": 1,
-                            "created_at": "2023-01-01T00:00:00Z",
-                        }
-                    ]
-                },
-                "error": None,
-                "status_code": 200,
-            }
-        }
+#     class Config:
+#         json_schema_extra = {
+#             "example": {
+#                 "id": 1,
+#                 "original_filename": "document.pdf",
+#                 "s3_key": "uploads/document_abc123.pdf",
+#                 "s3_url": "https://bucket.s3.amazonaws.com/uploads/document_abc123.pdf",
+#                 "file_size": 1024000,
+#                 "content_type": "application/pdf",
+#                 "score": 85.5,
+#                 "processing_time_ms": 150.0,
+#                 "version": 1,
+#                 "is_current_version": True,
+#                 "parent_version_id": None,
+#                 "user_id": "1",
+#                 "created_at": "2023-01-01T00:00:00Z",
+#                 "upload_status": "success",
+#             }
+#         }
 
 
-class FileRestoreResponse(StandardResponse):
-    """File restore response"""
+# class FileVersionHistoryResponse(StandardResponse):
+#     """File version history response"""
 
-    data: Optional[Dict[str, Any]] = Field(None, description="Restored file data")
+#     data: Optional[Dict[str, Any]] = Field(None, description="Version history data")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "message": "File version restored",
-                "data": {
-                    "id": 2,
-                    "original_filename": "document.pdf",
-                    "s3_key": "uploads/document_abc123.pdf",
-                    "version": 2,
-                },
-                "error": None,
-                "status_code": 200,
-            }
-        }
+#     class Config:
+#         json_schema_extra = {
+#             "example": {
+#                 "success": True,
+#                 "message": "Version history retrieved",
+#                 "data": {
+#                     "versions": [
+#                         {
+#                             "id": 1,
+#                             "original_filename": "document.pdf",
+#                             "s3_key": "uploads/document_abc123.pdf",
+#                             "version": 1,
+#                             "created_at": "2023-01-01T00:00:00Z",
+#                         }
+#                     ]
+#                 },
+#                 "error": None,
+#                 "status_code": 200,
+#             }
+#         }
+
+
+# class FileRestoreResponse(StandardResponse):
+#     """File restore response"""
+
+#     data: Optional[Dict[str, Any]] = Field(None, description="Restored file data")
+
+#     class Config:
+#         json_schema_extra = {
+#             "example": {
+#                 "success": True,
+#                 "message": "File version restored",
+#                 "data": {
+#                     "id": 2,
+#                     "original_filename": "document.pdf",
+#                     "s3_key": "uploads/document_abc123.pdf",
+#                     "version": 2,
+#                 },
+#                 "error": None,
+#                 "status_code": 200,
+#             }
+#         }
 
 class PresignedUrlResponse(BaseModel):
     url: str
@@ -318,4 +351,35 @@ class FileInfoResponse(BaseModel):
     upload_date: Optional[datetime] = None
     can_download: bool = True
     can_view: bool = True
+    
+# 10 sep2025 
+class SystemConfig(Base):
+    __tablename__ = "system_config"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    config_key = Column(String(100), unique=True, index=True, nullable=False)
+    config_value = Column(Text, nullable=False)
+    config_type = Column(String(50), default="string")
+    description = Column(Text)
+    is_editable = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+class FileHistory(Base):
+    __tablename__ = "file_history"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    file_upload_id = Column(Integer, ForeignKey("file_uploads.id", ondelete="CASCADE"))
+    s3_key = Column(String(500), nullable=False, index=True)
+    action = Column(String(50), nullable=False)
+    
+    # Ensure this is Integer to match User.id
+    action_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    
+    action_details = Column(JSON)
+    ip_address = Column(String(45))
+    user_agent = Column(Text)
+    created_at = Column(DateTime, default=func.now())
+    
+    file_upload = relationship("FileUploadRecord", backref="history_records")
     

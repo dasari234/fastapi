@@ -4,14 +4,15 @@ from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
+                        func)
 from sqlalchemy.orm import relationship
+
 from schemas.base import Base
 
 
 class User(Base):
     __tablename__ = "users"
-    __allow_unmapped__ = True
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, index=True, nullable=False)
@@ -22,7 +23,21 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    
     login_history = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan")
+    
+    # Use consistent naming - remove overlaps parameter if not needed
+    uploaded_files = relationship(
+        "FileUploadRecord", 
+        backref="uploader_user",
+        foreign_keys="FileUploadRecord.user_id"
+    )
+    
+    file_action_history = relationship(
+        "FileHistory", 
+        backref="action_user",
+        foreign_keys="FileHistory.action_by"
+    )
 
 
 class UserRole(str, Enum):

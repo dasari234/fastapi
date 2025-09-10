@@ -11,6 +11,7 @@ from schemas.base import StandardResponse
 from schemas.files import (DeleteFileResponse, MultipleFileUploadResponse,
                            UploadedFileInfo, UploadError)
 from services.auth_service import TokenData
+from services.file_history_service import file_history_service  # 10 sep2025
 from services.file_service import file_service
 from services.s3_service import s3_service
 from utils.content_processor import ContentProcessor
@@ -31,21 +32,15 @@ async def upload_file(
     request: Request,
     file: UploadFile = File(..., description="Single file to upload"),
     folder: Optional[str] = Form(None, description="S3 folder path"),
-    custom_filename: Optional[str] = Form(
-        None, description="Custom filename (without extension)"
-    ),
-    user_id: Optional[str] = Form(
-        None, description="User ID associated with the upload"
-    ),
-    metadata: Optional[str] = Form(
-        None, description="Additional metadata as JSON string"
-    ),
+    custom_filename: Optional[str] = Form(None, description="Custom filename (without extension)"),
+    user_id: Optional[str] = Form(None, description="User ID associated with the upload"),
+    metadata: Optional[str] = Form(None, description="Additional metadata as JSON string"),
+    version_comment: Optional[str] = Form(None, description="Comment for version creation"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_db_session)
 ):
-    """Upload a single file to AWS S3 bucket and store record in PostgreSQL"""
+    """Upload a file with versioning support"""
     try:
-        # Extract TokenData from tuple
         current_user, auth_status = current_user_result
         if auth_status != status.HTTP_200_OK or not current_user:
             return MultipleFileUploadResponse(
@@ -56,13 +51,7 @@ async def upload_file(
                 uploaded_files=[],
                 total_uploaded=0,
                 total_failed=1,
-                errors=[
-                    UploadError(
-                        filename=file.filename or "unknown",
-                        error="Authentication failed",
-                        status_code=auth_status,
-                    )
-                ],
+                errors=[UploadError(filename=file.filename or "unknown", error="Authentication failed", status_code=auth_status)]
             )
 
         # Validate file
@@ -191,44 +180,41 @@ async def upload_file(
             metadata=upload_metadata,
             upload_ip=client_ip,
             processing_time_ms=processing_time_ms,
+            version_comment=version_comment,
+            db=db
         )
 
+        # FIX: Handle database failure properly
         if db_status != status.HTTP_201_CREATED or not db_record:
-            # If S3 upload was successful but DB failed, try to delete from S3 to maintain consistency
+            # Clean up S3 file if database operation failed
             try:
                 await s3_service.delete_file(result["s3_key"])
-                logger.warning(
-                    f"Deleted file from S3 due to DB failure: {result['s3_key']}"
-                )
+                logger.warning(f"Deleted file from S3 due to database error: {result['s3_key']}")
             except Exception as s3_error:
-                logger.error(f"Failed to cleanup S3 file after DB failure: {s3_error}")
-
-            error_msg = "Failed to create database record"
-            if db_record and "error" in db_record:
-                error_msg = db_record.get("error", error_msg)
+                logger.error(f"Failed to cleanup S3 file after database error: {s3_error}")
 
             return MultipleFileUploadResponse(
                 success=False,
-                message="Database record creation failed",
-                error=error_msg,
-                status_code=db_status,
+                message="Database operation failed",
+                error="Failed to create database record",
+                status_code=db_status or status.HTTP_500_INTERNAL_SERVER_ERROR,
                 uploaded_files=[],
                 total_uploaded=0,
                 total_failed=1,
                 errors=[
                     UploadError(
                         filename=file.filename or "unknown",
-                        error=error_msg,
-                        status_code=db_status,
+                        error="Database operation failed",
+                        status_code=db_status or status.HTTP_500_INTERNAL_SERVER_ERROR,
                     )
                 ],
             )
 
-        logger.info(
-            f"File uploaded successfully: {result['s3_key']}, "
-            f"DB ID: {db_record['id'] if db_record else 'N/A'}, "
-            f"Score: {score}, Processing time: {processing_time_ms}ms, Size: {result['file_size']} bytes"
-        )
+        # Set appropriate message based on whether it's a new version
+        if db_record.get("is_new_version", False):
+            message = f"New version {db_record.get('version', 1)} created successfully"
+        else:
+            message = "File uploaded successfully"
 
         return MultipleFileUploadResponse(
             success=True,
@@ -240,24 +226,34 @@ async def upload_file(
                     file_url=result["file_url"],
                     file_size=result["file_size"],
                     content_type=result["content_type"],
+                    version=db_record.get("version", 1),
+                    is_new_version=db_record.get("is_new_version", False)
                 )
             ],
             total_uploaded=1,
             total_failed=0,
             errors=None,
-            message="File uploaded and recorded successfully",
+            message=message,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Upload failed: {e}", exc_info=True)
+        # Clean up S3 file on unexpected error
+        try:
+            if 'result' in locals() and result:
+                await s3_service.delete_file(result["s3_key"])
+                logger.warning(f"Deleted file from S3 due to unexpected error: {result['s3_key']}")
+        except Exception as s3_error:
+            logger.error(f"Failed to cleanup S3 file after unexpected error: {s3_error}")
+        
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Upload failed: {str(e)}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Upload failed: {str(e)}"
         )
-
-
+        
+        
 @router.post(
     "/upload-multiple",
     response_model=MultipleFileUploadResponse,
@@ -645,10 +641,10 @@ async def delete_upload_record(
                 deleted_key=s3_key,
             )
 
-        # Check permissions - non-admin users can only delete their own files
-        if current_user.role != "admin" and record["user_id"] != str(
-            current_user.user_id
-        ):
+        # FIX: Check permissions - non-admin users can only delete their own files
+        # record["user_id"] is now INTEGER, current_user.user_id is also INTEGER
+        if current_user.role != "admin" and record["user_id"] != current_user.user_id:
+            logger.warning(f"Permission denied: User {current_user.user_id} tried to delete file owned by {record['user_id']}")
             return DeleteFileResponse(
                 success=False,
                 message="Permission denied",
@@ -725,7 +721,8 @@ async def generate_download_url(
     s3_key: str,
     expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
+    request: Request = None #10 sep2025
 ):
     """Generate pre-signed URL for file download"""
     try:
@@ -745,7 +742,7 @@ async def generate_download_url(
             )
         
         # Check permissions - non-admin users can only access their own files
-        if current_user.role != "admin" and record["user_id"] != str(current_user.user_id):
+        if current_user.role != "admin" and record["user_id"] != current_user.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only access your own files"
@@ -761,6 +758,25 @@ async def generate_download_url(
                 status_code=url_status,
                 detail="Failed to generate download URL"
             )
+            
+        #10 sep2025
+        ip_address = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
+        
+        await file_history_service.log_file_action(
+            db=db,
+            file_upload_id=record["id"],
+            s3_key=s3_key,
+            action="download",
+            action_by=current_user.user_id,
+            action_details={
+                "expiration": expiration,
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            },
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        #end 10 sep2025
         
         # Get file info for response
         file_info, info_status = await s3_service.get_file_info(s3_key)
@@ -808,7 +824,8 @@ async def generate_view_url(
     s3_key: str,
     expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
+    request: Request = None #10 sep2025
 ):
     """Generate pre-signed URL for file viewing (inline)"""
     try:
@@ -828,7 +845,7 @@ async def generate_view_url(
             )
         
         # Check permissions - non-admin users can only access their own files
-        if current_user.role != "admin" and record["user_id"] != str(current_user.user_id):
+        if current_user.role != "admin" and record["user_id"] != current_user.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only access your own files"
@@ -844,6 +861,25 @@ async def generate_view_url(
                 status_code=url_status,
                 detail="Failed to generate view URL"
             )
+            
+        #10 sep2025
+        ip_address = request.client.host if request and request.client else None
+        user_agent = request.headers.get("user-agent") if request else None
+        
+        await file_history_service.log_file_action(
+            db=db,
+            file_upload_id=record["id"],
+            s3_key=s3_key,
+            action="view",
+            action_by=current_user.user_id,
+            action_details={
+                "expiration": expiration,
+                "generated_at": datetime.now(timezone.utc).isoformat()
+            },
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+        #end 10 sep2025
         
         # Get file info for response
         file_info, info_status = await s3_service.get_file_info(s3_key)
@@ -888,7 +924,7 @@ async def generate_view_url(
 async def get_file_info(
     s3_key: str,
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
 ):
     """Get file information and access permissions"""
     try:
@@ -918,7 +954,7 @@ async def get_file_info(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only access your own files"
             )
-        
+                    
         # Get file info from S3
         file_info, info_status = await s3_service.get_file_info(s3_key)
         

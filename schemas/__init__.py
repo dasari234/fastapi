@@ -1,21 +1,13 @@
-from .base import StandardResponse, ErrorResponse, SuccessResponse
-from .auth import (
-    Token, TokenData, UserLogin, PasswordResetRequest, 
-    PasswordReset, RefreshTokenRequest, TokenWithLoginInfo
-)
-from .users import (
-    UserRole, UserBase, UserCreate, UserUpdate, UserResponse,
-    UserResponseData, LoginHistoryResponse, LoginStatsResponse,
-    UserLoginHistoryResponse
-)
-from .files import (
-    UploadedFileInfo, UploadError, MultipleFileUploadResponse,
-    FileUploadRecordResponse, FileUploadListResponse, DeleteFileResponse,
-    FileVersionInfo, FileVersionHistoryResponse, FileRestoreResponse
-)
-from .health import (
-    HealthResponse, SimpleHealthResponse, DBHealthResponse
-)
+from .auth import (PasswordReset, PasswordResetRequest, RefreshTokenRequest,
+                   Token, TokenData, TokenWithLoginInfo, UserLogin)
+from .base import ErrorResponse, StandardResponse, SuccessResponse
+from .files import (  # FileVersionInfo, FileVersionHistoryResponse, FileRestoreResponse
+    DeleteFileResponse, FileUploadListResponse, FileUploadRecordResponse,
+    MultipleFileUploadResponse, UploadedFileInfo, UploadError)
+from .health import DBHealthResponse, HealthResponse, SimpleHealthResponse
+from .users import (LoginHistoryResponse, LoginStatsResponse, UserBase,
+                    UserCreate, UserLoginHistoryResponse, UserResponse,
+                    UserResponseData, UserRole, UserUpdate)
 
 __all__ = [
     # Base schemas
@@ -33,7 +25,7 @@ __all__ = [
     # File schemas
     'UploadedFileInfo', 'UploadError', 'MultipleFileUploadResponse',
     'FileUploadRecordResponse', 'FileUploadListResponse', 'DeleteFileResponse',
-    'FileVersionInfo', 'FileVersionHistoryResponse', 'FileRestoreResponse',
+    # 'FileVersionInfo', 'FileVersionHistoryResponse', 'FileRestoreResponse',
     
     # Health schemas
     'HealthResponse', 'SimpleHealthResponse', 'DBHealthResponse'

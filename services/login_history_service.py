@@ -1,9 +1,9 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
-from datetime import datetime
-from typing import Optional, Tuple, List
-
 import logging
+from datetime import datetime
+from typing import List, Optional, Tuple
+
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.users import LoginHistory
 
@@ -133,9 +133,9 @@ class LoginHistoryService:
     ) -> Tuple[Optional[List[dict]], int]:
         """Get recent failed login attempts within specified hours"""
         try:
-            from datetime import datetime, timedelta
+            from datetime import datetime, timedelta, timezone
 
-            time_threshold = datetime.utcnow() - timedelta(hours=hours)
+            time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
 
             result = await db.execute(
                 select(LoginHistory)
