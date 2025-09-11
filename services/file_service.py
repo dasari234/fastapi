@@ -6,8 +6,8 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_context
-from schemas.files import FileUploadRecord
-from schemas.users import User
+from models.files import FileUploadRecord
+from models.user import User
 
 
 class FileService:

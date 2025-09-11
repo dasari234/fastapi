@@ -6,7 +6,8 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_context
-from schemas.users import User, UserCreate, UserRole, UserUpdate
+from models.user import User
+from schemas.users import UserCreate, UserRole, UserUpdate
 from services.auth_service import auth_service
 
 
@@ -285,4 +286,5 @@ class UserService:
             
 # Create global instance
 user_service = UserService()
+
 

@@ -5,7 +5,7 @@ from loguru import logger
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from schemas.users import LoginHistory
+from models.login_history import LoginHistory
 
 
 class LoginHistoryService:

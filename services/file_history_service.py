@@ -7,7 +7,7 @@ from loguru import logger
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from schemas.files import FileHistory
+from models.files import FileHistory
 from services.config_service import config_service
 
 

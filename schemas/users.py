@@ -4,40 +4,6 @@ from enum import Enum
 from typing import List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy import (Boolean, Column, DateTime, ForeignKey, Integer, String,
-                        func)
-from sqlalchemy.orm import relationship
-
-from schemas.base import Base
-
-
-class User(Base):
-    __tablename__ = "users"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    first_name = Column(String(50), nullable=False)
-    last_name = Column(String(50), nullable=False)
-    password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), default="user", nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-    
-    login_history = relationship("LoginHistory", back_populates="user", cascade="all, delete-orphan")
-    
-    # Use consistent naming - remove overlaps parameter if not needed
-    uploaded_files = relationship(
-        "FileUploadRecord", 
-        backref="uploader_user",
-        foreign_keys="FileUploadRecord.user_id"
-    )
-    
-    file_action_history = relationship(
-        "FileHistory", 
-        backref="action_user",
-        foreign_keys="FileHistory.action_by"
-    )
 
 
 class UserRole(str, Enum):
@@ -165,19 +131,7 @@ class UserResponseData(BaseModel):
             }
         }
 
-class LoginHistory(Base):
-    __tablename__ = "login_history"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    login_time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    ip_address = Column(String(45), nullable=True)
-    user_agent = Column(String(500), nullable=True)
-    login_status = Column(String(20), default="success", nullable=False) 
-    failure_reason = Column(String(255), nullable=True) 
-    
-    user = relationship("User", back_populates="login_history")
-    
+  
 class LoginHistoryResponse(BaseModel):
     """Login history record"""
     id: int = Field(..., description="Record ID")
@@ -202,7 +156,6 @@ class LoginHistoryResponse(BaseModel):
             }
         }
 
-
 class LoginStatsResponse(BaseModel):
     """Login statistics"""
     total_logins: int = Field(..., description="Total login attempts")
@@ -219,7 +172,6 @@ class LoginStatsResponse(BaseModel):
                 "failed_logins": 3
             }
         }
-
 
 class UserLoginHistoryResponse(BaseModel):
     """Complete user login history with statistics"""
