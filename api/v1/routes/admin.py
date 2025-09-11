@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.v1.dependencies import require_admin
 from database import get_db_context
-from routes.dependencies import require_admin
 from schemas import StandardResponse
 from services.config_service import config_service
 from services.file_history_service import file_history_service

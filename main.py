@@ -3,14 +3,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
+from api.v1.routes.auth import router as auth_router
+from api.v1.routes.files import router as files_router
+from api.v1.routes.health import router as health_router
+from api.v1.routes.root import router as root_router
+from api.v1.routes.users import router as users_router
 from config import DEBUG, ENVIRONMENT, VERSION
 from database import close_db, init_db
 from middleware.cors import setup_cors
-from routes.auth import router as auth_router
-from routes.files import router as files_router
-from routes.health import router as health_router
-from routes.root import router as root_router
-from routes.users import router as users_router
 from utils.exception_handling import global_exception_handler
 from utils.logging_config import setup_logging
 from utils.logging_request import log_requests_middleware

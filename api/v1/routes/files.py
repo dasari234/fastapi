@@ -6,7 +6,7 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from routes.dependencies import get_current_user, get_db_session
+from api.v1.dependencies import get_current_user, get_db_session
 from schemas.base import StandardResponse
 from schemas.files import (DeleteFileResponse, MultipleFileUploadResponse,
                            UploadedFileInfo, UploadError)

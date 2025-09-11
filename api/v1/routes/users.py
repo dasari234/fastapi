@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.v1.dependencies import get_current_user, require_role
 from database import get_db
-from routes.dependencies import get_current_user, require_role
 from schemas.auth import TokenData
 from schemas.base import StandardResponse
 from schemas.users import (LoginStatsResponse, UserLoginHistoryResponse,
@@ -600,6 +600,10 @@ async def get_user_login_history_admin(
         raise
     except Exception as e:
         logger.error(f"Error getting user login history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve login history",
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve login history",
