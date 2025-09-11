@@ -1,15 +1,14 @@
-import logging
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_context
-from schemas.users import UserCreate, UserRole, UserUpdate, User
+from schemas.users import User, UserCreate, UserRole, UserUpdate
 from services.auth_service import auth_service
 
-logger = logging.getLogger(__name__)
 
 class UserService:
     async def create_user(self, user_data: UserCreate, db: AsyncSession = None) -> Tuple[Optional[Dict[str, Any]], int]:

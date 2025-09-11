@@ -3,4 +3,4 @@ venv
 *.ruff_cache
 __pycache__
 *.idea
-app.log
+logs

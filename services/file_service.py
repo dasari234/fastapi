@@ -1,15 +1,13 @@
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_context
 from schemas.files import FileUploadRecord
 from schemas.users import User
-
-logger = logging.getLogger(__name__)
 
 
 class FileService:

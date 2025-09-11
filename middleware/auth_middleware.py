@@ -1,11 +1,8 @@
-import logging
-
 from fastapi import HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from services.auth_service import auth_service
 
-logger = logging.getLogger(__name__)
 
 class JWTBearer(HTTPBearer):
     def __init__(self, auto_error: bool = True):

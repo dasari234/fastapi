@@ -1,14 +1,12 @@
 #10 sep2025
 
-import logging
-
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.files import SystemConfig
 from services.config_service import ConfigService
 
-logger = logging.getLogger(__name__)
 
 class ConfigInitializer:
     def __init__(self):

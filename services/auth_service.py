@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -6,14 +5,13 @@ import jwt
 from fastapi import Depends, status
 from fastapi.security import OAuth2PasswordBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
+from loguru import logger
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM,
                     REFRESH_TOKEN_EXPIRE_DAYS, SECRET_KEY)
 from schemas.auth import TokenData
-
-logger = logging.getLogger(__name__)
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -185,5 +183,11 @@ class AuthService:
 
 # Create global instance
 auth_service = AuthService()
+
+
+# Create global instance
+auth_service = AuthService()
+
+
 
 

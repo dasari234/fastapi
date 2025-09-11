@@ -1,7 +1,7 @@
-import logging
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,7 +10,6 @@ from schemas.files import FileUploadRecord
 from services.config_service import config_service
 from services.file_history_service import file_history_service
 
-logger = logging.getLogger(__name__)
 
 class FileVersionService:
     async def get_file_versions(

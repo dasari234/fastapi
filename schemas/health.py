@@ -33,7 +33,6 @@ class HealthResponse(BaseModel):
             }
         }
 
-
 class SimpleHealthResponse(BaseModel):
     """Simple health check response"""
     success: bool = Field(..., description="Whether the health check was successful")
@@ -55,7 +54,6 @@ class SimpleHealthResponse(BaseModel):
                 "status_code": 200
             }
         }
-
 
 class DBHealthResponse(BaseModel):
     """Database health check response"""

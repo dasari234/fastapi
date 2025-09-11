@@ -1,14 +1,13 @@
-import logging
 from typing import Dict, Optional, Tuple
 
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
 from fastapi import HTTPException, status
+from loguru import logger
 
 from config import (AWS_ACCESS_KEY_ID, AWS_REGION, AWS_SECRET_ACCESS_KEY,
                     S3_BUCKET_NAME)
 
-logger = logging.getLogger(__name__)
 
 class S3Service:
     def __init__(self):

@@ -1,14 +1,13 @@
-import logging
 import time
 from typing import Optional, Tuple
 
 import chardet
 from fastapi import UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from loguru import logger
 
 from config import MAX_CONTENT_LENGTH_FOR_SCORING
 
-logger = logging.getLogger(__name__)
 
 class ContentProcessor:
     """Content processing utility class with timing"""

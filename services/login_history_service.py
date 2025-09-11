@@ -1,13 +1,11 @@
-import logging
 from datetime import datetime
 from typing import List, Optional, Tuple
 
+from loguru import logger
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.users import LoginHistory
-
-logger = logging.getLogger(__name__)
 
 
 class LoginHistoryService:

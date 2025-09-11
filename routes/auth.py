@@ -1,18 +1,17 @@
-import logging
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from schemas.users import UserCreate
+from schemas.auth import (PasswordReset, PasswordResetRequest,
+                          RefreshTokenRequest, Token)
 from schemas.base import StandardResponse
-from schemas.auth import Token, PasswordReset, PasswordResetRequest, RefreshTokenRequest
+from schemas.users import UserCreate
 from services.auth_service import auth_service
 from services.login_history_service import login_history_service
 from services.user_service import user_service
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Authentication"], prefix="/auth")
 
 @router.post(

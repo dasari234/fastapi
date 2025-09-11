@@ -12,7 +12,7 @@ router = APIRouter(tags=["Root"])
 )
 async def root():
     return SuccessResponse(
-        message="Welcome to my bookstore app!",
+        message="Welcome to my first FastApi",
         status_code=200,
         data={
             "database": "NeonDB (Serverless PostgreSQL)",

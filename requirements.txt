@@ -15,3 +15,4 @@ pydantic==2.5.0
 pydantic-settings==2.1.0
 pydantic[email]
 PyJWT==2.10.1
+loguru

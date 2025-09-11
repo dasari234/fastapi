@@ -1,24 +1,19 @@
-import logging
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
-from schemas.base import StandardResponse
-from schemas.users import (
-    LoginStatsResponse,
-    UserLoginHistoryResponse,
-    UserRole,
-    UserUpdate,
-)
 from routes.dependencies import get_current_user, require_role
+from schemas.auth import TokenData
+from schemas.base import StandardResponse
+from schemas.users import (LoginStatsResponse, UserLoginHistoryResponse,
+                           UserRole, UserUpdate)
 from services import login_history_service
 from services.auth_service import auth_service
 from services.user_service import user_service
-from schemas.auth import TokenData
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Users"], prefix="/users")
 
 

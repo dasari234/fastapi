@@ -1,9 +1,9 @@
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      Request, UploadFile, status)
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from routes.dependencies import get_current_user, get_db_session
@@ -19,7 +19,6 @@ from utils.file_validator import FileValidator
 from utils.metadata_handler import MetadataHandler
 from utils.security import generate_safe_filename, get_client_ip
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Files"], prefix="/files")
 
 

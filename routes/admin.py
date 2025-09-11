@@ -1,8 +1,8 @@
 # 10 sep2025
-import logging
 from typing import Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db_context
@@ -11,7 +11,6 @@ from schemas import StandardResponse
 from services.config_service import config_service
 from services.file_history_service import file_history_service
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Admin"], prefix="/admin")
 
 @router.get(

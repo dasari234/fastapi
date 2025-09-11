@@ -1,14 +1,13 @@
 #10 sep2025
-import logging
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.files import SystemConfig
 
-logger = logging.getLogger(__name__)
 
 class ConfigService:
     # Default configuration values

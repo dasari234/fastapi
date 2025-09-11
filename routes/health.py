@@ -1,16 +1,16 @@
-import logging
 import time
-from typing import Dict, Any
+from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, status
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
 from config import ENVIRONMENT
 from database import get_db
-from schemas.health import HealthResponse, SimpleHealthResponse, DBHealthResponse
+from schemas.health import (DBHealthResponse, HealthResponse,
+                            SimpleHealthResponse)
 
-logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Health"])
 
 @router.get(

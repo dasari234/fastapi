@@ -36,5 +36,5 @@ async def generate_safe_filename(
     
     return filename, None, None
 
-    return filename, None, None
+
 

@@ -1,16 +1,15 @@
 # 10 sep2025
-import logging
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import status
+from loguru import logger
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from schemas.files import FileHistory
 from services.config_service import config_service
 
-logger = logging.getLogger(__name__)
 
 class FileHistoryService:
     async def log_file_action(
