@@ -11,10 +11,10 @@ from database import get_db
 from schemas.health import (DBHealthResponse, HealthResponse,
                             SimpleHealthResponse)
 
-router = APIRouter(tags=["Health"])
+router = APIRouter(tags=["Health"], prefix="/health")
 
 @router.get(
-    "/health",
+    "",
     response_model=HealthResponse,
     summary="Health Check",
     responses={
@@ -73,7 +73,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
 
 @router.get(
-    "/health/startup", 
+    "/startup", 
     response_model=SimpleHealthResponse,
     summary="Startup Health Check",
     responses={
@@ -104,7 +104,7 @@ async def startup_health_check():
 
 
 @router.get(
-    "/health/db", 
+    "/db", 
     response_model=DBHealthResponse,
     summary="Database Health Check",
     responses={
@@ -158,7 +158,7 @@ async def database_health_check(db: AsyncSession = Depends(get_db)):
 
 
 @router.get(
-    "/health/detailed",
+    "/detailed",
     response_model=Dict[str, Any],
     summary="Detailed Health Check",
     responses={
