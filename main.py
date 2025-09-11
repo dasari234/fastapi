@@ -13,7 +13,7 @@ from routes.root import router as root_router
 from routes.users import router as users_router
 from utils.exception_handling import global_exception_handler
 from utils.logging_config import setup_logging
-from utils.request_logging import log_requests_middleware
+from utils.logging_request import log_requests_middleware
 
 # Setup logging
 setup_logging()
