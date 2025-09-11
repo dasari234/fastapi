@@ -6,7 +6,7 @@ from loguru import logger
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.files import SystemConfig
+from models.system_config import SystemConfig
 
 
 class ConfigService:

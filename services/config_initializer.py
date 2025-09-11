@@ -4,7 +4,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.files import SystemConfig
+from models.system_config import SystemConfig
 from services.config_service import ConfigService
 
 
