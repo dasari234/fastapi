@@ -13,118 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class FileService:
-    # async def create_upload_record(
-    #     self,
-    #     original_filename: str,
-    #     s3_key: str,
-    #     s3_url: str,
-    #     file_size: int,
-    #     content_type: str,
-    #     file_content: Optional[str] = None,
-    #     score: float = 0.0,
-    #     folder_path: Optional[str] = None,
-    #     user_id: Optional[str] = None,
-    #     metadata: Optional[Dict[str, Any]] = None,
-    #     upload_ip: Optional[str] = None,
-    #     upload_status: str = "success",
-    #     processing_time_ms: float = 0.0,
-    #     parent_version_id: Optional[int] = None,
-    #     db: AsyncSession = None,
-    # ) -> Tuple[Optional[Dict[str, Any]], int]:
-    #     """Create a new file upload record with status codes"""
-
-    #     async def _create_record(
-    #         session: AsyncSession,
-    #     ) -> Tuple[Optional[Dict[str, Any]], int]:
-    #         try:
-    #             # Check if this is a new version of an existing file
-    #             version = 1
-    #             if parent_version_id:
-    #                 # Get parent version to determine new version number
-    #                 parent_result = await session.execute(
-    #                     select(FileUploadRecord).where(
-    #                         FileUploadRecord.id == parent_version_id
-    #                     )
-    #                 )
-    #                 parent = parent_result.scalar_one_or_none()
-    #                 if parent:
-    #                     version = parent.version + 1
-
-    #                     # Mark previous versions as not current
-    #                     await session.execute(
-    #                         update(FileUploadRecord)
-    #                         .where(FileUploadRecord.s3_key == s3_key)
-    #                         .values(is_current_version=False)
-    #                     )
-
-    #             upload_record = FileUploadRecord(
-    #                 original_filename=original_filename,
-    #                 s3_key=s3_key,
-    #                 s3_url=s3_url,
-    #                 file_size=file_size,
-    #                 content_type=content_type,
-    #                 file_content=file_content,
-    #                 score=score,
-    #                 folder_path=folder_path,
-    #                 user_id=user_id,
-    #                 file_metadata=metadata,
-    #                 upload_ip=upload_ip,
-    #                 upload_status=upload_status,
-    #                 processing_time_ms=processing_time_ms,
-    #                 version=version,
-    #                 is_current_version=True,
-    #                 parent_version_id=parent_version_id,
-    #             )
-
-    #             session.add(upload_record)
-    #             await session.commit()
-    #             await session.refresh(upload_record)
-
-    #             record_data = {
-    #                 "id": upload_record.id,
-    #                 "original_filename": upload_record.original_filename,
-    #                 "s3_key": upload_record.s3_key,
-    #                 "s3_url": upload_record.s3_url,
-    #                 "file_size": upload_record.file_size,
-    #                 "content_type": upload_record.content_type,
-    #                 "file_content": upload_record.file_content,
-    #                 "score": upload_record.score,
-    #                 "folder_path": upload_record.folder_path,
-    #                 "user_id": upload_record.user_id,
-    #                 "metadata": upload_record.file_metadata,
-    #                 "upload_ip": upload_record.upload_ip,
-    #                 "upload_status": upload_record.upload_status,
-    #                 "processing_time_ms": upload_record.processing_time_ms,
-    #                 "version": upload_record.version,
-    #                 "is_current_version": upload_record.is_current_version,
-    #                 "parent_version_id": upload_record.parent_version_id,
-    #                 "created_at": upload_record.created_at.isoformat()
-    #                 if upload_record.created_at
-    #                 else None,
-    #                 "updated_at": upload_record.updated_at.isoformat()
-    #                 if upload_record.updated_at
-    #                 else None,
-    #             }
-
-    #             return record_data, status.HTTP_201_CREATED
-
-    #         except Exception as e:
-    #             await session.rollback()
-    #             logger.error(f"Error creating upload record: {e}", exc_info=True)
-    #             # Return more detailed error information
-    #             error_data = {
-    #                 "error": str(e),
-    #                 "original_filename": original_filename,
-    #                 "s3_key": s3_key,
-    #             }
-    #             return error_data, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-    #     if db:
-    #         return await _create_record(db)
-    #     else:
-    #         async with get_db_context() as session:
-    #             return await _create_record(session)
-
     async def create_upload_record(
         self,
         original_filename: str,
@@ -147,12 +35,25 @@ class FileService:
         async def _create_record(session: AsyncSession) -> Tuple[Optional[Dict], int]:
             try:
                 # Check if file already exists using FileUploadRecord
+                # result = await session.execute(
+                #     select(FileUploadRecord).where(FileUploadRecord.s3_key == s3_key)
+                # )
+                user_id_int = int(user_id) if user_id and user_id.isdigit() else None
+                # DEBUG: Check what we're looking for
+                logger.info(f"Looking for existing file: filename='{original_filename}', user_id={user_id_int}")
+            
                 result = await session.execute(
-                    select(FileUploadRecord).where(FileUploadRecord.s3_key == s3_key)
+                    select(FileUploadRecord).where(
+                        FileUploadRecord.original_filename == original_filename,
+                        FileUploadRecord.user_id == user_id_int,
+                    )
                 )
-                existing_file = result.scalar_one_or_none()
+                existing_files = result.scalars().all()
+                logger.info(f"Found {len(existing_files)} existing files with same name and user")
 
-                if existing_file:
+                if existing_files:
+                    current_version = max(existing_files, key=lambda x: x.version)
+                    logger.info(f"Current version: {current_version.version}, new version will be: {current_version.version + 1}")
                     # File exists, create new version using version service
                     from services.file_version_service import \
                         file_version_service
@@ -178,7 +79,8 @@ class FileService:
                     ) = await file_version_service.create_new_version(
                         session, new_file_data, user_id, version_comment
                     )
-
+                    
+                    logger.info(f"File version service returned: status={status_code}, version={new_version}")
                     if status_code != status.HTTP_201_CREATED:
                         return None, status_code
 
@@ -190,11 +92,7 @@ class FileService:
                     }, status.HTTP_201_CREATED
                 else:
                     # New file, create first version
-                    # FIX: Convert user_id from string to integer
-                    user_id_int = (
-                        int(user_id) if user_id and user_id.isdigit() else None
-                    )
-
+                    logger.info("No existing file found, creating first version")
                     file_upload = FileUploadRecord(
                         original_filename=original_filename,
                         s3_key=s3_key,
@@ -204,7 +102,7 @@ class FileService:
                         file_content=file_content,
                         score=score,
                         folder_path=folder_path,
-                        user_id=user_id_int,  # Use integer here
+                        user_id=user_id_int,
                         file_metadata=metadata,
                         upload_ip=upload_ip,
                         processing_time_ms=processing_time_ms,
@@ -234,7 +132,7 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _create_record(session)
-
+            
     async def get_file_versions(
         self, s3_key: str, user_id: Optional[str] = None, db: AsyncSession = None
     ) -> Tuple[Optional[List[Dict[str, Any]]], int]:
@@ -412,190 +310,214 @@ class FileService:
             async with get_db_context() as session:
                 return await _get_current_version(session)
 
-
     async def list_current_versions(
         self,
         user_id: Optional[str] = None,
         folder: Optional[str] = None,
         search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        sort_order: str = "desc",
         limit: int = 100,
         offset: int = 0,
-        db: AsyncSession = None
+        db: AsyncSession = None,
     ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """List only current versions of files with filtering, search and pagination"""
-        async def _list_current_versions(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
+        """List only current versions of files with filtering, search, sorting and pagination"""
+
+        async def _list_current_versions(
+            session: AsyncSession,
+        ) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
+                # Validate and convert limit/offset to ensure they are integers
+                try:
+                    valid_limit = int(limit) if limit is not None else 100
+                    valid_offset = int(offset) if offset is not None else 0
+                except (ValueError, TypeError):
+                    valid_limit = 100
+                    valid_offset = 0
+                    logger.warning(f"Invalid limit/offset values: limit={limit}, offset={offset}, using defaults")
                 
-                logger.info(f"list_current_versions received: user_id={user_id}, folder={folder}, search={search}, limit={limit}, offset={offset}")
+                # Ensure sort_order has a valid value
+                valid_sort_order = str(sort_order).lower() if sort_order else "desc"
+                if valid_sort_order not in ["asc", "desc"]:
+                    valid_sort_order = "desc"
+                    logger.warning(f"Invalid sort_order: {sort_order}, defaulting to 'desc'")
+
+                # Convert sort_by to string and handle None case
+                sort_by_str = str(sort_by) if sort_by is not None else None
+                
+                logger.info(
+                    f"list_current_versions received: user_id={user_id}, folder={folder}, search={search}, sort_by={sort_by_str}, sort_order={valid_sort_order}, limit={valid_limit}, offset={valid_offset}"
+                )
+                
                 # First get the file records (current versions only)
-                query = select(FileUploadRecord).where(FileUploadRecord.is_current_version == True)
-                
+                query = select(FileUploadRecord).where(
+                    FileUploadRecord.is_current_version == True
+                )
+
                 if user_id:
                     user_id_int = int(user_id)
                     query = query.where(FileUploadRecord.user_id == user_id_int)
-                    logger.info(f"Filtering by user_id (converted to int): {user_id_int}")
+                    logger.info(
+                        f"Filtering by user_id (converted to int): {user_id_int}"
+                    )
                 if folder:
                     query = query.where(FileUploadRecord.folder_path == folder)
                     logger.info(f"Filtering by folder: {folder}")
-                
+
                 # Add search functionality (file fields only)
                 if search:
                     search_filter = or_(
                         FileUploadRecord.original_filename.ilike(f"%{search}%"),
                         FileUploadRecord.s3_key.ilike(f"%{search}%"),
                         FileUploadRecord.content_type.ilike(f"%{search}%"),
-                        FileUploadRecord.file_content.ilike(f"%{search}%")
+                        FileUploadRecord.file_content.ilike(f"%{search}%"),
                     )
                     query = query.where(search_filter)
                     logger.info(f"Applying search: {search}")
+
+                # Apply sorting - safely handle sort_by parameter
+                sort_column = None
+                if sort_by_str:
+                    sort_by_lower = str(sort_by_str).lower()
                     
+                    # Map sort_by parameter to actual column names
+                    sort_mapping = {
+                        "filename": FileUploadRecord.original_filename,
+                        "size": FileUploadRecord.file_size,
+                        "type": FileUploadRecord.content_type,
+                        "score": FileUploadRecord.score,
+                        "created": FileUploadRecord.created_at,
+                        "updated": FileUploadRecord.updated_at,
+                        "version": FileUploadRecord.version,
+                    }
+                    
+                    if sort_by_lower in sort_mapping:
+                        sort_column = sort_mapping[sort_by_lower]
+                        if valid_sort_order == "asc":
+                            query = query.order_by(sort_column.asc())
+                        else:
+                            query = query.order_by(sort_column.desc())
+                        logger.info(f"Sorting by {sort_by_lower} in {valid_sort_order} order")
+                    else:
+                        logger.warning(f"Invalid sort_by parameter: {sort_by_str}")
+                
+                # Default sorting if no sort specified
+                if not sort_column:
+                    query = query.order_by(FileUploadRecord.created_at.desc())
+                    logger.info("Using default sorting by created_at desc")
+
                 # Count total current versions
                 count_query = query.with_only_columns(func.count()).order_by(None)
                 total_count_result = await session.execute(count_query)
                 total_count = total_count_result.scalar() or 0
-                
+
                 logger.info(f"Total records found: {total_count}")
-                
-                # Get paginated results
-                query = query.order_by(FileUploadRecord.created_at.desc()).offset(offset).limit(limit)
+
+                # Get paginated results - use validated limit/offset
+                query = query.offset(valid_offset).limit(valid_limit)
                 result = await session.execute(query)
                 uploads = result.scalars().all()
-                
+
                 logger.info(f"Retrieved {len(uploads)} records from database")
-                
-                # FIX: Get user IDs as integers (they are stored as integers in the database)
-                user_ids = list(set(upload.user_id for upload in uploads if upload.user_id is not None))
+
+                # Get user IDs for user details
+                user_ids = list(
+                    set(
+                        upload.user_id
+                        for upload in uploads
+                        if upload.user_id is not None
+                    )
+                )
                 users_dict = {}
-                
+
                 if user_ids:
                     try:
                         logger.info(f"Fetching user details for user IDs: {user_ids}")
-                        # FIX: Use integer user_ids directly for querying
-                        users_query = select(User).where(User.id.in_(user_ids))
+                        # Get users with their details
+                        users_query = select(
+                            User.id,
+                            User.first_name,
+                            User.last_name,
+                            User.email
+                        ).where(User.id.in_(user_ids))
                         users_result = await session.execute(users_query)
-                        users = users_result.scalars().all()
+                        users = users_result.all()
                         
-                        # FIX: Create dictionary with integer keys
-                        users_dict = {user.id: user for user in users}
+                        # Create dictionary with user details
+                        users_dict = {
+                            user_id: {
+                                "first_name": first_name,
+                                "last_name": last_name,
+                                "email": email
+                            }
+                            for user_id, first_name, last_name, email in users
+                        }
                         logger.info(f"Found {len(users_dict)} users")
-                        
+
                     except Exception as e:
                         logger.error(f"Error fetching user details: {e}", exc_info=True)
-                
+
                 records = []
                 for upload_record in uploads:
-                    # FIX: Use integer key for lookup since users_dict has integer keys
-                    user = users_dict.get(upload_record.user_id) if upload_record.user_id else None
-                    
+                    user_details = (
+                        users_dict.get(upload_record.user_id)
+                        if upload_record.user_id
+                        else None
+                    )
+
                     # Debug logging
-                    if upload_record.user_id and user is None:
-                        logger.warning(f"User not found for user_id: {upload_record.user_id} (type: {type(upload_record.user_id)})")
-                    
-                    records.append({
-                        "id": upload_record.id,
-                        "original_filename": upload_record.original_filename,
-                        "s3_key": upload_record.s3_key,
-                        "s3_url": upload_record.s3_url,
-                        "file_size": upload_record.file_size,
-                        "content_type": upload_record.content_type,
-                        "file_content": upload_record.file_content,
-                        "score": upload_record.score,
-                        "folder_path": upload_record.folder_path,
-                        "user_id": upload_record.user_id,
-                        "user_details": {
-                            "first_name": user.first_name if user else "Unknown",
-                            "last_name": user.last_name if user else "User",
-                            "email": user.email if user else "unknown@example.com"
-                        } if user else None,
-                        "metadata": upload_record.file_metadata,
-                        "upload_ip": upload_record.upload_ip,
-                        "upload_status": upload_record.upload_status,
-                        "processing_time_ms": upload_record.processing_time_ms,
-                        "version": upload_record.version,
-                        "is_current_version": upload_record.is_current_version,
-                        "parent_version_id": upload_record.parent_version_id,
-                        "created_at": upload_record.created_at.isoformat() if upload_record.created_at else None,
-                        "updated_at": upload_record.updated_at.isoformat() if upload_record.updated_at else None
-                    })
-                
+                    if upload_record.user_id and user_details is None:
+                        logger.warning(
+                            f"User not found for user_id: {upload_record.user_id}"
+                        )
+
+                    records.append(
+                        {
+                            "id": upload_record.id,
+                            "original_filename": upload_record.original_filename,
+                            "s3_key": upload_record.s3_key,
+                            "s3_url": upload_record.s3_url,
+                            "file_size": upload_record.file_size,
+                            "content_type": upload_record.content_type,
+                            "file_content": upload_record.file_content,
+                            "score": upload_record.score,
+                            "folder_path": upload_record.folder_path,
+                            "user_id": upload_record.user_id,
+                            "user_details": user_details,
+                            "metadata": upload_record.file_metadata,
+                            "upload_ip": upload_record.upload_ip,
+                            "upload_status": upload_record.upload_status,
+                            "processing_time_ms": upload_record.processing_time_ms,
+                            "version": upload_record.version,
+                            "is_current_version": upload_record.is_current_version,
+                            "parent_version_id": upload_record.parent_version_id,
+                            "created_at": upload_record.created_at.isoformat()
+                            if upload_record.created_at
+                            else None,
+                            "updated_at": upload_record.updated_at.isoformat()
+                            if upload_record.updated_at
+                            else None,
+                        }
+                    )
+
                 return {
                     "records": records,
                     "total_count": total_count,
-                    "search_query": search
+                    "search_query": search,
+                    "sort_by": sort_by_str,
+                    "sort_order": valid_sort_order,
                 }, status.HTTP_200_OK
-                
+
             except Exception as e:
                 logger.error(f"Error listing current versions: {e}", exc_info=True)
                 return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-        
+
         if db:
             return await _list_current_versions(db)
         else:
             async with get_db_context() as session:
                 return await _list_current_versions(session)
-        
-    async def restore_version(
-        self,
-        version_id: int,
-        user_id: str,
-        is_admin: bool = False,
-        db: AsyncSession = None,
-    ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Restore a specific version as the current version"""
-
-        async def _restore_version(
-            session: AsyncSession,
-        ) -> Tuple[Optional[Dict[str, Any]], int]:
-            try:
-                # Get the version to restore
-                result = await session.execute(
-                    select(FileUploadRecord).where(FileUploadRecord.id == version_id)
-                )
-                version_to_restore = result.scalar_one_or_none()
-
-                if not version_to_restore:
-                    return None, status.HTTP_404_NOT_FOUND
-
-                # Check permissions - users can only restore their own files unless admin
-                if not is_admin and version_to_restore.user_id != user_id:
-                    return None, status.HTTP_403_FORBIDDEN
-
-                # Create a new version based on the restored version
-                new_version_data = {
-                    "original_filename": version_to_restore.original_filename,
-                    "s3_key": version_to_restore.s3_key,
-                    "s3_url": version_to_restore.s3_url,
-                    "file_size": version_to_restore.file_size,
-                    "content_type": version_to_restore.content_type,
-                    "file_content": version_to_restore.file_content,
-                    "score": version_to_restore.score,
-                    "folder_path": version_to_restore.folder_path,
-                    "user_id": user_id,  # Current user becomes the owner of the new version
-                    "metadata": version_to_restore.file_metadata,
-                    "upload_ip": version_to_restore.upload_ip,
-                    "upload_status": "restored",
-                    "processing_time_ms": 0,  # Reset processing time for restored version
-                    "parent_version_id": version_to_restore.id,
-                }
-
-                # Create new version
-                new_version, status_code = await self.create_upload_record(
-                    **new_version_data, db=session
-                )
-
-                return new_version, status_code
-
-            except Exception as e:
-                await session.rollback()
-                logger.error(f"Error restoring version {version_id}: {e}")
-                return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-        if db:
-            return await _restore_version(db)
-        else:
-            async with get_db_context() as session:
-                return await _restore_version(session)
-
+    
     async def list_uploads(
         self,
         user_id: Optional[str] = None,

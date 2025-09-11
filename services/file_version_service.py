@@ -90,47 +90,55 @@ class FileVersionService:
         """Create a new version of a file"""
         try:
             s3_key = file_data["s3_key"]
+            original_filename = file_data["original_filename"]
             
-            # Get current version
-            current_version, status_code = await self.get_current_version(s3_key, db)
-            if status_code != status.HTTP_200_OK:
-                # This is the first version
-                file_upload = FileUploadRecord(
-                    **file_data,
-                    user_id=user_id,
-                    version=1,
-                    is_current_version=True,
-                    version_comment=version_comment or "Initial version"
+            logger.info(f"Creating new version for file: {original_filename}, user: {user_id}")
+
+            # Get current version by original filename (not s3_key)
+            result = await db.execute(
+                select(FileUploadRecord).where(
+                    FileUploadRecord.original_filename == original_filename,
+                    FileUploadRecord.is_current_version == True
                 )
-                
-                db.add(file_upload)
-                await db.commit()
-                await db.refresh(file_upload)
-                
-                # Log initial upload
-                await file_history_service.log_file_action(
-                    db=db,
-                    file_upload_id=file_upload.id,
-                    s3_key=s3_key,
-                    action="upload",
-                    action_by=int(user_id) if user_id.isdigit() else user_id,
-                    action_details={
-                        "version": 1,
-                        "is_new_version": False,
-                        "version_comment": version_comment
-                    },
-                    ip_address=ip_address,
-                    user_agent=user_agent
-                )
-                
-                return file_upload.to_dict(), status.HTTP_201_CREATED
+            )
+            current_version = result.scalar_one_or_none()
             
-            # File exists, create new version
+            if not current_version:
+                logger.error(f"No current version found for file: {original_filename}")
+                return None, status.HTTP_404_NOT_FOUND
+        
+            logger.info(f"Current version found: v{current_version.version}")
+            
             # Mark current version as not current
-            await db.execute(
-                update(FileUploadRecord)
-                .where(FileUploadRecord.id == current_version["id"])
-                .values(is_current_version=False)
+            current_version.is_current_version = False
+            db.add(current_version)
+        
+            # Create new version
+            new_version_number = current_version.version + 1
+            logger.info(f"Creating new version: v{new_version_number}")
+        
+            # Convert user_id to integer
+            user_id_int = int(user_id) if user_id and user_id.isdigit() else None
+            
+            # Create new version record
+            new_version = FileUploadRecord(
+                original_filename=file_data["original_filename"],
+                s3_key=file_data["s3_key"],
+                s3_url=file_data["s3_url"],
+                file_size=file_data["file_size"],
+                content_type=file_data["content_type"],
+                file_content=file_data["file_content"],
+                score=file_data["score"],
+                folder_path=file_data["folder_path"],
+                user_id=user_id_int,
+                file_metadata=file_data["file_metadata"],
+                upload_ip=file_data["upload_ip"],
+                processing_time_ms=file_data["processing_time_ms"],
+                upload_status=file_data["upload_status"],
+                version=new_version_number,
+                is_current_version=True,
+                parent_version_id=current_version.id,
+                version_comment=version_comment
             )
             
             # Get max versions configuration
@@ -138,19 +146,7 @@ class FileVersionService:
             max_versions = max_versions or 10
             
             # Clean up old versions if exceeding limit
-            await self._cleanup_old_versions(db, s3_key, max_versions)
-            
-            # Create new version
-            new_version_number = current_version["version"] + 1
-            
-            new_version = FileUploadRecord(
-                **file_data,
-                user_id=user_id,
-                version=new_version_number,
-                is_current_version=True,
-                parent_version_id=current_version["id"],
-                version_comment=version_comment
-            )
+            await self._cleanup_old_versions(db, original_filename, max_versions)
             
             db.add(new_version)
             await db.commit()
@@ -162,9 +158,9 @@ class FileVersionService:
                 file_upload_id=new_version.id,
                 s3_key=s3_key,
                 action="version_create",
-                action_by=int(user_id) if user_id.isdigit() else user_id,
+                action_by=user_id_int,
                 action_details={
-                    "previous_version": current_version["version"],
+                    "previous_version": current_version.version,
                     "new_version": new_version_number,
                     "version_comment": version_comment
                 },
@@ -172,19 +168,19 @@ class FileVersionService:
                 user_agent=user_agent
             )
             
-            logger.info(f"Created new version {new_version_number} for file {s3_key}")
+            logger.info(f"Created new version {new_version_number} for file {original_filename}")
             
             return new_version.to_dict(), status.HTTP_201_CREATED
             
         except Exception as e:
             await db.rollback()
-            logger.error(f"Error creating new version for {file_data['s3_key']}: {e}", exc_info=True)
+            logger.error(f"Error creating new version for {file_data['original_filename']}: {e}", exc_info=True)
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
     
     async def _cleanup_old_versions(
         self,
         db: AsyncSession,
-        s3_key: str,
+        original_filename: str,  # Changed from s3_key
         max_versions: int
     ) -> int:
         """Clean up old versions beyond the limit"""
@@ -192,7 +188,7 @@ class FileVersionService:
             # Get all versions ordered by version descending
             result = await db.execute(
                 select(FileUploadRecord.id, FileUploadRecord.version)
-                .where(FileUploadRecord.s3_key == s3_key)
+                .where(FileUploadRecord.original_filename == original_filename)  # Changed
                 .order_by(FileUploadRecord.version.desc())
             )
             all_versions = result.all()
@@ -207,13 +203,13 @@ class FileVersionService:
                         delete(FileUploadRecord)
                         .where(FileUploadRecord.id.in_(versions_to_delete))
                     )
-                    logger.info(f"Cleaned up {len(versions_to_delete)} old versions for {s3_key}")
+                    logger.info(f"Cleaned up {len(versions_to_delete)} old versions for {original_filename}")
                     return len(versions_to_delete)
             
             return 0
             
         except Exception as e:
-            logger.error(f"Error cleaning up old versions for {s3_key}: {e}")
+            logger.error(f"Error cleaning up old versions for {original_filename}: {e}")
             return 0
     
     async def restore_version(

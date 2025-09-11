@@ -506,6 +506,8 @@ async def list_upload_records(
     search: Optional[str] = Query(
         None, description="Search across filename, content, user details"
     ),
+    sort_by: Optional[str] = Query(None, description="Sort by field (filename, size, type, score, created, updated, version)"),
+    sort_order: str = Query("desc", description="Sort order (asc/desc)"),
     show_all_versions: bool = Query(
         False, description="Show all versions or only current"
     ),
@@ -539,7 +541,7 @@ async def list_upload_records(
         # Get uploads based on version filter
         if show_all_versions:
             result, status_code = await file_service.list_uploads(
-                user_id, folder, search, limit, offset, db
+                user_id, folder, search, sort_by, sort_order, limit, offset, db
             )
         else:
             # Only show current versions
