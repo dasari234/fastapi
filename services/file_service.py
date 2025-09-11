@@ -35,9 +35,6 @@ class FileService:
         async def _create_record(session: AsyncSession) -> Tuple[Optional[Dict], int]:
             try:
                 # Check if file already exists using FileUploadRecord
-                # result = await session.execute(
-                #     select(FileUploadRecord).where(FileUploadRecord.s3_key == s3_key)
-                # )
                 user_id_int = int(user_id) if user_id and user_id.isdigit() else None
                 # DEBUG: Check what we're looking for
                 logger.info(f"Looking for existing file: filename='{original_filename}', user_id={user_id_int}")
@@ -377,29 +374,61 @@ class FileService:
 
                 # Apply sorting - safely handle sort_by parameter
                 sort_column = None
+                join_users = False  # Flag to indicate if we need to join with users table
+
                 if sort_by_str:
                     sort_by_lower = str(sort_by_str).lower()
+                    logger.info(f"Attempting to sort by: '{sort_by_lower}'")
                     
                     # Map sort_by parameter to actual column names
                     sort_mapping = {
+                        "original_filename": FileUploadRecord.original_filename,
                         "filename": FileUploadRecord.original_filename,
                         "size": FileUploadRecord.file_size,
+                        "file_size": FileUploadRecord.file_size,
                         "type": FileUploadRecord.content_type,
+                        "content_type": FileUploadRecord.content_type,
                         "score": FileUploadRecord.score,
                         "created": FileUploadRecord.created_at,
+                        "created_at": FileUploadRecord.created_at,
                         "updated": FileUploadRecord.updated_at,
+                        "updated_at": FileUploadRecord.updated_at,
                         "version": FileUploadRecord.version,
+                        # User-related sorting
+                        "user_firstname": User.first_name,
+                        "first_name": User.first_name,
+                        "firstname": User.first_name,
+                        "user_lastname": User.last_name,
+                        "last_name": User.last_name,
+                        "lastname": User.last_name,
+                        "user_email": User.email,
+                        "email": User.email,
+                        "user": User.first_name, 
                     }
                     
                     if sort_by_lower in sort_mapping:
                         sort_column = sort_mapping[sort_by_lower]
+                        
+                        # Check if we need to join with users table
+                        if sort_by_lower in ["user_firstname", "first_name", "firstname", 
+                                        "user_lastname", "last_name", "lastname", 
+                                        "user_email", "email", "user"]:
+                            join_users = True
+                            logger.info(f"Will join with users table for sorting by {sort_by_lower}")
+                        
                         if valid_sort_order == "asc":
                             query = query.order_by(sort_column.asc())
+                            logger.info(f"Sorting by {sort_by_lower} in ASCENDING order")
                         else:
                             query = query.order_by(sort_column.desc())
-                        logger.info(f"Sorting by {sort_by_lower} in {valid_sort_order} order")
+                            logger.info(f"Sorting by {sort_by_lower} in DESCENDING order")
                     else:
-                        logger.warning(f"Invalid sort_by parameter: {sort_by_str}")
+                        logger.warning(f"Invalid sort_by parameter: '{sort_by_lower}'. Valid options: {list(sort_mapping.keys())}")
+                
+                # Join with users table if needed for sorting
+                if join_users:
+                    query = query.join(User, FileUploadRecord.user_id == User.id)
+                    logger.info("Joined with users table for sorting")
                 
                 # Default sorting if no sort specified
                 if not sort_column:
@@ -517,7 +546,7 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _list_current_versions(session)
-    
+        
     async def list_uploads(
         self,
         user_id: Optional[str] = None,

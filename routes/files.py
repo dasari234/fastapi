@@ -277,6 +277,7 @@ async def upload_multiple_files(
     metadata: Optional[str] = Form(
         None, description="Additional metadata as JSON string for all files"
     ),
+    version_comment: Optional[str] = Form(None, description="Comment for version creation"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
@@ -399,6 +400,7 @@ async def upload_multiple_files(
                     metadata=upload_metadata,
                     upload_ip=client_ip,
                     processing_time_ms=processing_time_ms,
+                    version_comment=version_comment,
                 )
 
                 if db_status != status.HTTP_201_CREATED or not db_record:
@@ -546,7 +548,7 @@ async def list_upload_records(
         else:
             # Only show current versions
             result, status_code = await file_service.list_current_versions(
-                user_id, folder, search, limit, offset, db
+                user_id, folder, search, sort_by, sort_order, limit, offset, db
             )
 
         if status_code != status.HTTP_200_OK:

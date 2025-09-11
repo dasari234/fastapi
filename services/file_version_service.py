@@ -2,7 +2,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import status
-from sqlalchemy import and_, delete, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -111,6 +111,7 @@ class FileVersionService:
             
             # Mark current version as not current
             current_version.is_current_version = False
+            current_version.updated_at = func.now()
             db.add(current_version)
         
             # Create new version
@@ -138,7 +139,8 @@ class FileVersionService:
                 version=new_version_number,
                 is_current_version=True,
                 parent_version_id=current_version.id,
-                version_comment=version_comment
+                version_comment=version_comment,
+                created_at=current_version.created_at if current_version.version == 1 else current_version.created_at
             )
             
             # Get max versions configuration
