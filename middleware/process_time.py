@@ -3,7 +3,6 @@ import time
 from fastapi import Request, Response
 from loguru import logger
 
-logger.setLevel(logging.INFO)
 
 async def add_process_time_header(request: Request, call_next) -> Response:
     """
@@ -20,4 +19,4 @@ async def add_process_time_header(request: Request, call_next) -> Response:
         response.status_code,
         process_time,
     )
-    return response
+    return response 
