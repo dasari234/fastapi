@@ -719,31 +719,12 @@ class FileService:
                     return None, status.HTTP_404_NOT_FOUND
 
                 record_dict = record.to_dict()
+                
+                # Cache the record after database fetch
+                await redis_service.cache_file(s3_key, record_dict)
+                
                 return record_dict, status.HTTP_200_OK
-
-                # record_data = {
-                #     "id": upload.id,
-                #     "original_filename": upload.original_filename,
-                #     "s3_key": upload.s3_key,
-                #     "s3_url": upload.s3_url,
-                #     "file_size": upload.file_size,
-                #     "content_type": upload.content_type,
-                #     "file_content": upload.file_content,
-                #     "score": upload.score,
-                #     "folder_path": upload.folder_path,
-                #     "user_id": upload.user_id,
-                #     "metadata": upload.file_metadata,
-                #     "upload_ip": upload.upload_ip,
-                #     "upload_status": upload.upload_status,
-                #     "created_at": upload.created_at.isoformat()
-                #     if upload.created_at
-                #     else None,
-                #     "updated_at": upload.updated_at.isoformat()
-                #     if upload.updated_at
-                #     else None,
-                # }
-
-                # return record_data, status.HTTP_200_OK
+                
 
             except Exception as e:
                 logger.error(

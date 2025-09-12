@@ -11,15 +11,44 @@ class RedisService:
     def __init__(self):
         self.redis = redis_pool
         self.initialized = redis_pool is not None
+        self.connection_healthy = False
+        self._check_connection_health()
+        
+    def _check_connection_health(self):
+        """Check if Redis connection is healthy"""
+        if not self.initialized:
+            logger.warning("Redis not initialized - running without caching")
+            self.connection_healthy = False
+            return
+        
+        try:
+            # We'll check health on first use instead of blocking here
+            self.connection_healthy = True
+        except:
+            self.connection_healthy = False
+    
+    async def _ensure_connection(self):
+        """Ensure Redis connection is healthy"""
+        if not self.initialized or not self.connection_healthy:
+            return False
+        
+        try:
+            # Test connection with a ping
+            await self.redis.ping()
+            return True
+        except Exception as e:
+            logger.warning(f"Redis connection unhealthy: {e}")
+            self.connection_healthy = False
+            return False
         
     def is_available(self) -> bool:
         """Check if Redis is available"""
-        return self.initialized and self.redis is not None
+        return self.initialized and self.connection_healthy
 
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         """Set value with optional TTL"""
-        if not self.is_available():
-            logger.debug("Redis not available - skipping set operation")
+        if not await self._ensure_connection():
+            logger.debug(f"Redis not available - skipping set for key: {key}")
             return False
             
         try:
@@ -28,24 +57,28 @@ class RedisService:
                 await self.redis.setex(key, ttl, serialized_value)
             else:
                 await self.redis.set(key, serialized_value)
+            logger.debug(f"Redis set successful for key: {key}")
             return True
-        
         except Exception as e:
             logger.error(f"Redis set error for key {key}: {e}")
+            self.connection_healthy = False
             return False
 
     async def get(self, key: str) -> Optional[Any]:
         """Get value by key"""
-        if not self.initialized or not self.redis:
+        if not await self._ensure_connection():
+            logger.debug(f"Redis not available - skipping get for key: {key}")
             return None
             
         try:
             value = await self.redis.get(key)
             if value:
+                logger.debug(f"Redis get successful for key: {key}")
                 return json.loads(value)
             return None
         except Exception as e:
             logger.error(f"Redis get error for key {key}: {e}")
+            self.connection_healthy = False
             return None
 
     async def delete(self, key: str) -> bool:
