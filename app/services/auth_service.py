@@ -12,11 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM,
                         REFRESH_TOKEN_EXPIRE_DAYS, SECRET_KEY)
 from app.schemas.auth import TokenData
+from app.services.redis_service import redis_service
 
-# Password hashing
+# --- Password hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# OAuth2 scheme
+# --- OAuth2 scheme ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
@@ -111,6 +112,13 @@ class AuthService:
     async def get_current_user(self, token: str = Depends(oauth2_scheme)) -> Tuple[Optional[TokenData], int]:
         """Get current user from token - returns (user_data, status_code)"""
         try:
+            # Check cache first
+            cached_user = await redis_service.get_cached_token(token)
+            
+            if cached_user:
+                logger.debug("User data retrieved from cache")
+                return TokenData(**cached_user), status.HTTP_200_OK
+            
             # Verify token
             payload, status_code = self.verify_token(token)
             if status_code != status.HTTP_200_OK or not payload:
@@ -130,6 +138,9 @@ class AuthService:
                 email=email,
                 role=role
             )
+            
+            # Cache the user data
+            await redis_service.cache_token(token, user_data.dict())
             
             return user_data, status.HTTP_200_OK
             
@@ -181,12 +192,9 @@ class AuthService:
         return _get_current_user
 
 
-# Create global instance
+# --- Create global instance ---
 auth_service = AuthService()
 
-
-# Create global instance
-auth_service = AuthService()
 
 
 

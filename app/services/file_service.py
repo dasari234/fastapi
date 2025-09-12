@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db_context
 from app.models.files import FileUploadRecord
 from app.models.user import User
+from app.services.redis_service import redis_service
 
 
 class FileService:
@@ -699,6 +700,11 @@ class FileService:
         self, s3_key: str, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Get a specific upload record by S3 key with status codes"""
+         # Check cache first
+        cached_record = await redis_service.get_cached_file(s3_key)
+        if cached_record:
+            logger.debug(f"File record {s3_key} retrieved from cache")
+            return cached_record, status.HTTP_200_OK
 
         async def _get_record(
             session: AsyncSession,
@@ -843,4 +849,5 @@ class FileService:
 
 
 # Create global instance
+file_service = FileService()
 file_service = FileService()

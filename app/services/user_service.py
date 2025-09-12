@@ -9,6 +9,7 @@ from app.database import get_db_context
 from app.models.user import User
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services.auth_service import auth_service
+from app.services.redis_service import redis_service
 
 
 class UserService:
@@ -53,6 +54,10 @@ class UserService:
                     "updated_at": user.updated_at.isoformat() if user.updated_at else None
                 }
                 
+                # Cache the new user
+                await redis_service.cache_user(user.id, user_response)
+                await redis_service.cache_user_by_email(user.email, user_response)
+                
                 return user_response, status.HTTP_201_CREATED
                 
             except Exception as e:
@@ -67,7 +72,13 @@ class UserService:
                 return await _create_user(session)
 
     async def get_user_by_id(self, user_id: int, db: AsyncSession = None) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Get user by ID with standardized response format"""
+        """Get user by ID with Redis caching and standardized response"""
+        # Check cache first
+        cached_user = await redis_service.get_cached_user(user_id)
+        if cached_user:
+            logger.debug(f"User {user_id} retrieved from cache")
+            return cached_user, status.HTTP_200_OK
+        
         async def _get_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
                 result = await session.execute(
@@ -89,6 +100,10 @@ class UserService:
                     "updated_at": user.updated_at.isoformat() if user.updated_at else None
                 }
                 
+                # Cache the user data
+                await redis_service.cache_user(user_id, user_data)
+                await redis_service.cache_user_by_email(user.email, user_data)
+                
                 return user_data, status.HTTP_200_OK
                 
             except Exception as e:
@@ -103,6 +118,12 @@ class UserService:
         
     async def get_user_by_email(self, email: str, db: AsyncSession = None) -> Tuple[Optional[Dict[str, Any]], int]:
         """Get user by email with standardized response"""
+        # Check cache first
+        cached_user = await redis_service.get_cached_user_by_email(email)
+        if cached_user:
+            logger.debug(f"User {email} retrieved from cache")
+            return cached_user, status.HTTP_200_OK
+        
         async def _get_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
                 result = await session.execute(
@@ -124,6 +145,9 @@ class UserService:
                     "created_at": user.created_at.isoformat() if user.created_at else None,
                     "updated_at": user.updated_at.isoformat() if user.updated_at else None
                 }
+                # Cache the user data
+                await redis_service.cache_user(user.id, user_data)
+                await redis_service.cache_user_by_email(email, user_data)
                 
                 return user_data, status.HTTP_200_OK
                 
@@ -138,7 +162,7 @@ class UserService:
                 return await _get_user(session)
 
     async def update_user(self, user_id: int, user_data: UserUpdate, db: AsyncSession = None) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Update user information"""
+        """Update user information and clear cache"""
         async def _update_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
                 # Check if user exists first
@@ -149,6 +173,9 @@ class UserService:
                 
                 if not user:
                     return None, status.HTTP_404_NOT_FOUND
+                
+                # Get current email for cache invalidation
+                old_email = user.email
                 
                 # Prepare update data
                 update_data = user_data.dict(exclude_unset=True)
@@ -178,6 +205,17 @@ class UserService:
                     "updated_at": updated_user.updated_at.isoformat() if updated_user.updated_at else None
                 }
                 
+                # Invalidate cache for both old and new email if email changed
+                await redis_service.invalidate_user(user_id)
+                await redis_service.invalidate_user_by_email(old_email)
+                
+                if 'email' in update_data and update_data['email'] != old_email:
+                    await redis_service.invalidate_user_by_email(update_data['email'])
+                
+                # Cache the updated user
+                await redis_service.cache_user(user_id, user_response)
+                await redis_service.cache_user_by_email(updated_user.email, user_response)
+                
                 return user_response, status.HTTP_200_OK
                 
             except Exception as e:
@@ -204,11 +242,18 @@ class UserService:
                 if not user:
                     return False, status.HTTP_404_NOT_FOUND
                 
+                # Get email for cache invalidation
+                user_email = user.email
+                
                 # Delete user
                 await session.execute(
                     delete(User).where(User.id == user_id)
                 )
                 await session.commit()
+                
+                 # Invalidate cache
+                await redis_service.invalidate_user(user_id)
+                await redis_service.invalidate_user_by_email(user_email)
                 
                 return True, status.HTTP_200_OK
                 
@@ -253,6 +298,24 @@ class UserService:
                 result = await session.execute(query)
                 users = result.scalars().all()
                 
+                users_list = []
+                for user in users:
+                    user_data = {
+                        "id": user.id,
+                        "email": user.email,
+                        "first_name": user.first_name,
+                        "last_name": user.last_name,
+                        "role": user.role,
+                        "is_active": user.is_active,
+                        "created_at": user.created_at.isoformat() if user.created_at else None,
+                        "updated_at": user.updated_at.isoformat() if user.updated_at else None
+                    }
+                    users_list.append(user_data)
+                    
+                    # Cache individual users for faster single lookups
+                    await redis_service.cache_user(user.id, user_data)
+                    await redis_service.cache_user_by_email(user.email, user_data)
+                
                 response_data = {
                     "users": [
                         {
@@ -286,5 +349,7 @@ class UserService:
             
 # Create global instance
 user_service = UserService()
+
+
 
 

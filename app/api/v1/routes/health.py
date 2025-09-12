@@ -1,7 +1,7 @@
 import time
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
@@ -10,6 +10,7 @@ from app.config import ENVIRONMENT
 from app.database import get_db
 from app.schemas.health import (DBHealthResponse, HealthResponse,
                                 SimpleHealthResponse)
+from app.services.redis_service import redis_service
 
 router = APIRouter(tags=["Health"], prefix="/health")
 
@@ -214,3 +215,75 @@ async def detailed_health_check(db: AsyncSession = Depends(get_db)):
         "timestamp": time.time(),
         "status_code": status_code
     }
+    
+    
+@router.get("/redis", summary="Check Redis health")
+async def check_redis_health():
+    """Check Redis connection health"""
+    try:
+        if not redis_service.initialized or not redis_service.redis:
+            return {
+                "status": "unhealthy",
+                "message": "Redis not initialized",
+                "redis_initialized": False
+            }
+        
+        # Test Redis connection
+        is_connected = await redis_service.redis.ping()
+        
+        return {
+            "status": "healthy" if is_connected else "unhealthy",
+            "message": "Redis connection successful" if is_connected else "Redis connection failed",
+            "redis_initialized": True,
+            "redis_connected": is_connected
+        }
+        
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis health check failed: {str(e)}"
+        )
+        
+
+        
+# In your health router
+@router.get("/redis/status", summary="Detailed Redis status")
+async def redis_status():
+    """Get detailed Redis connection status"""
+    from app.config import REDIS_HOST, REDIS_PORT, REDIS_SSL
+    from app.redis.base_config import redis_pool
+    
+    status_info = {
+        "configured_host": REDIS_HOST,
+        "configured_port": REDIS_PORT,
+        "configured_ssl": REDIS_SSL,
+        "redis_pool_initialized": redis_pool is not None,
+        "connection_available": False,
+        "error": None
+    }
+    
+    if redis_pool:
+        try:
+            # Try to ping Redis
+            is_alive = await redis_pool.ping()
+            status_info["connection_available"] = is_alive
+            status_info["message"] = "Redis is connected and responsive"
+        except Exception as e:
+            status_info["error"] = str(e)
+            status_info["message"] = "Redis pool exists but connection failed"
+    else:
+        status_info["message"] = "Redis connection pool not initialized"
+    
+    return status_info
+
+
+@router.get("/debug/redis/user/{user_id}", summary="Debug user cache")
+async def debug_user_cache(user_id: int):
+    """Debug endpoint to inspect user cache"""
+    cached = await redis_service.get_cached_user(user_id)
+    return {
+        "user_id": user_id,
+        "cached": cached is not None,
+        "data": cached
+    }       

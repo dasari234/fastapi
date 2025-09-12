@@ -12,11 +12,12 @@ from app.api.v1.routes.users import router as users_router
 from app.config import DEBUG, ENVIRONMENT, VERSION
 from app.database import close_db, init_db
 from app.middleware.cors import setup_cors
+from app.redis.base_config import close_redis_pool, init_redis_pool
 from app.utils.exception_handling import global_exception_handler
 from app.utils.logging_config import setup_logging
 from app.utils.logging_request import log_requests_middleware
 
-#---Setup logging---
+# --- Setup logging ---
 setup_logging()
 
 
@@ -26,8 +27,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting FastAPI application...")
     logger.info("Environment: {}", ENVIRONMENT)
     logger.info("Version: {}", VERSION)
-
-    # Initialize database
+    
+     # Initialize database
     try:
         await init_db()
         logger.success("Database initialized successfully")
@@ -35,15 +36,31 @@ async def lifespan(app: FastAPI):
         logger.critical("Failed to initialize database: {}", e)
         raise
 
+    # Initialize Redis (but don't crash if it fails)
+    try:
+        redis_success = await init_redis_pool()
+        if redis_success:
+            logger.success("Redis initialized successfully")
+        else:
+            logger.warning("Redis initialization failed - running without Redis caching")
+    except Exception as e:
+        logger.warning("Redis initialization failed with exception: {} - running without Redis", e)
+
     yield
 
     # Shutdown
-    logger.info("Shutting down FastAPI application...")
+    logger.info("Shutting down FastAPI application...")   
     try:
         await close_db()
         logger.info("Database connection closed")
     except Exception as e:
         logger.error("Error closing database connection: {}", e)
+        
+    try:
+        await close_redis_pool()
+        logger.info("Redis connection closed")
+    except Exception as e:
+        logger.error("Error closing Redis connection: {}", e)
 
 
 app = FastAPI(
@@ -57,7 +74,7 @@ app = FastAPI(
 #---Setup CORS---
 setup_cors(app)
 
-#---Include routers---
+# --- Include routers ---
 app.include_router(root_router)
 app.include_router(health_router)
 app.include_router(auth_router, prefix="/api/v1")
@@ -65,10 +82,10 @@ app.include_router(users_router, prefix="/api/v1")
 app.include_router(files_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 
-#---Add middleware---
+# --- Add middleware ---
 app.middleware("http")(log_requests_middleware)
 
-#---Add exception handler---
+# --- Add exception handler ---
 app.exception_handler(Exception)(global_exception_handler)
 
 if __name__ == "__main__":
@@ -79,7 +96,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8080,
         reload=DEBUG,
         log_level="error",
         access_log=False,
