@@ -1,0 +1,27 @@
+[MASTER]
+ignore=venv
+extension-pkg-whitelist=
+jobs=1
+
+[MESSAGES CONTROL]
+# Disable specific warnings/errors
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    logging-fstring-interpolation
+
+[REPORTS]
+output-format = colorized
+reports=no
+score=yes
+
+[BASIC]
+good-names=i,j,k,ex,Run,_,db,pk,id
+variable-rgx=[a-z_][a-z0-9_]{0,30}$
+function-rgx=[a-z_][a-z0-9_]{0,30}$
+class-rgx=[A-Z_][a-zA-Z0-9]+$
+
+[LOGGING]
+logging-format-style=percent
