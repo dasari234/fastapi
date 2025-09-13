@@ -79,14 +79,30 @@ async def login(
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
 
+        # if status_code == status.HTTP_404_NOT_FOUND:
+        #     # Record failed login attempt for non-existent user
+        #     await login_history_service.create_login_record(
+        #         db=db,
+        #         user_id=None,
+        #         ip_address=ip_address,
+        #         user_agent=user_agent,
+        #         login_status="failed",
+        #         failure_reason="User not found",
+        #     )
+        #     return StandardResponse(
+        #         success=False,
+        #         message="Login failed",
+        #         error="Invalid credentials",
+        #         status_code=status.HTTP_401_UNAUTHORIZED,
+        #     )
+        
         if status_code == status.HTTP_404_NOT_FOUND:
-            # Record failed login attempt for non-existent user
-            await login_history_service.create_login_record(
+            # Use the new method for failed attempts without user_id
+            await login_history_service.create_failed_login_attempt(
                 db=db,
-                user_id=None,
+                email=form_data.username,
                 ip_address=ip_address,
                 user_agent=user_agent,
-                login_status="failed",
                 failure_reason="User not found",
             )
             return StandardResponse(
@@ -94,6 +110,14 @@ async def login(
                 message="Login failed",
                 error="Invalid credentials",
                 status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Internal server error",
+                status_code=status_code,
             )
 
         if status_code != status.HTTP_200_OK:

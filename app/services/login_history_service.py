@@ -9,33 +9,68 @@ from app.models.login_history import LoginHistory
 
 
 class LoginHistoryService:
+    # @staticmethod
+    # async def create_login_record(
+    #     db: AsyncSession,
+    #     user_id: int,
+    #     ip_address: str = None,
+    #     user_agent: str = None,
+    #     login_status: str = "success",
+    #     failure_reason: str = None,
+    # ) -> Tuple[Optional[LoginHistory], int]:
+    #     """Create login history record with standardized response"""
+    #     try:
+    #         login_record = LoginHistory(
+    #             user_id=user_id,
+    #             ip_address=ip_address,
+    #             user_agent=user_agent,
+    #             login_status=login_status,
+    #             failure_reason=failure_reason,
+    #         )
+    #         db.add(login_record)
+    #         await db.commit()
+    #         await db.refresh(login_record)
+    #         return login_record, 200
+    #     except Exception as e:
+    #         await db.rollback()
+    #         logger.error(f"Error creating login record: {e}")
+    #         return None, 500
     @staticmethod
     async def create_login_record(
         db: AsyncSession,
-        user_id: int,
-        ip_address: str = None,
-        user_agent: str = None,
+        user_id: Optional[int] = None,  # Keep as Optional for interface
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
         login_status: str = "success",
-        failure_reason: str = None,
-    ) -> Tuple[Optional[LoginHistory], int]:
-        """Create login history record with standardized response"""
+        failure_reason: Optional[str] = None
+    ) -> Optional[LoginHistory]:
+        """
+        Create a login history record - handle NOT NULL constraint gracefully
+        """
+        # Skip creating record if user_id is None due to NOT NULL constraint
+        if user_id is None:
+            logger.warning("Skipping login record due to null user_id (NOT NULL constraint)")
+            return None
+        
         try:
             login_record = LoginHistory(
                 user_id=user_id,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 login_status=login_status,
-                failure_reason=failure_reason,
+                failure_reason=failure_reason
             )
+            
             db.add(login_record)
             await db.commit()
             await db.refresh(login_record)
-            return login_record, 200
+            return login_record
+            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error creating login record: {e}")
-            return None, 500
-
+            return None
+    
     @staticmethod
     async def get_last_login_time(
         db: AsyncSession, user_id: int
@@ -163,6 +198,25 @@ class LoginHistoryService:
         except Exception as e:
             logger.error(f"Error getting recent failed logins for user {user_id}: {e}")
             return None, 500
+
+    @staticmethod
+    async def create_failed_login_attempt(
+        db: AsyncSession,
+        email: str,
+        ip_address: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        failure_reason: str = "Invalid credentials"
+    ) -> None:
+        """
+        Create a record for failed login attempts (including non-existent users)
+        without violating the NOT NULL constraint
+        """
+        # For now, just log the attempt since we can't store without user_id
+        logger.warning(
+            f"Failed login attempt - Email: {email}, "
+            f"IP: {ip_address}, Reason: {failure_reason}"
+        )
+    
 
 
 # Create global instance

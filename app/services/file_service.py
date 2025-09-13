@@ -12,6 +12,15 @@ from app.services.redis_service import redis_service
 
 
 class FileService:
+    
+    def _generate_cache_key(self, prefix: str, **kwargs) -> str:
+        """Generate consistent cache key from parameters"""
+        key_parts = [prefix]
+        for k, v in sorted(kwargs.items()):
+            if v is not None:
+                key_parts.append(f"{k}:{v}")
+        return ":".join(key_parts)
+    
     async def create_upload_record(
         self,
         original_filename: str,
@@ -35,7 +44,6 @@ class FileService:
             try:
                 # Check if file already exists using FileUploadRecord
                 user_id_int = int(user_id) if user_id and user_id.isdigit() else None
-                # DEBUG: Check what we're looking for
                 logger.info(f"Looking for existing file: filename='{original_filename}', user_id={user_id_int}")
             
                 result = await session.execute(
@@ -51,7 +59,7 @@ class FileService:
                     current_version = max(existing_files, key=lambda x: x.version)
                     logger.info(f"Current version: {current_version.version}, new version will be: {current_version.version + 1}")
                     # File exists, create new version using version service
-                    from services.file_version_service import \
+                    from app.services.file_version_service import \
                         file_version_service
 
                     new_file_data = {
@@ -80,12 +88,12 @@ class FileService:
                     if status_code != status.HTTP_201_CREATED:
                         return None, status_code
 
-                    return {
+                    db_record = {
                         "id": new_version["id"],
                         "s3_key": new_version["s3_key"],
                         "version": new_version["version"],
                         "is_new_version": True,
-                    }, status.HTTP_201_CREATED
+                    }
                 else:
                     # New file, create first version
                     logger.info("No existing file found, creating first version")
@@ -111,12 +119,33 @@ class FileService:
                     await session.commit()
                     await session.refresh(file_upload)
 
-                    return {
+                    db_record = {
                         "id": file_upload.id,
                         "s3_key": file_upload.s3_key,
                         "version": file_upload.version,
                         "is_new_version": False,
-                    }, status.HTTP_201_CREATED
+                    }
+                    
+                # Invalidate relevant caches after successful creation
+                if db_record:
+                    # Invalidate file cache
+                    await redis_service.invalidate_file_cache(s3_key)
+                    
+                    # Invalidate user's file list cache
+                    user_files_key = self._generate_cache_key("user_files", user_id=user_id)
+                    await redis_service.invalidate_file_list_cache(user_files_key)
+                    
+                    # Invalidate folder cache if applicable
+                    if folder_path:
+                        folder_key = self._generate_cache_key("folder_files", folder=folder_path)
+                        await redis_service.invalidate_file_list_cache(folder_key)
+                    
+                    # Invalidate all files cache
+                    await redis_service.invalidate_file_list_cache("all_files")
+                    
+                    logger.info(f"Invalidated Redis caches for new file: {s3_key}")
+                
+                return db_record, status.HTTP_201_CREATED
 
             except Exception as e:
                 await session.rollback()
@@ -128,11 +157,18 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _create_record(session)
-            
+              
     async def get_file_versions(
         self, s3_key: str, user_id: Optional[str] = None, db: AsyncSession = None
     ) -> Tuple[Optional[List[Dict[str, Any]]], int]:
         """Get all versions of a file with access control"""
+        cache_key = self._generate_cache_key("file_versions", s3_key=s3_key, user_id=user_id)
+        
+        # Check cache first
+        cached_versions = await redis_service.get_cached_file_list(cache_key)
+        if cached_versions:
+            logger.debug(f"File versions cache hit for key: {cache_key}")
+            return cached_versions, status.HTTP_200_OK
 
         async def _get_versions(
             session: AsyncSession,
@@ -206,6 +242,9 @@ class FileService:
                         }
                     )
 
+                # Cache the versions (10 minutes TTL)
+                await redis_service.cache_file_list(cache_key, versions_data, ttl=600)
+                
                 return versions_data, status.HTTP_200_OK
 
             except Exception as e:
@@ -318,6 +357,23 @@ class FileService:
         db: AsyncSession = None,
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """List only current versions of files with filtering, search, sorting and pagination"""
+        # Generate cache key based on parameters
+        cache_key = self._generate_cache_key(
+            "current_versions",
+            user_id=user_id,
+            folder=folder,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Check cache first
+        cached_data = await redis_service.get_cached_file_list(cache_key)
+        if cached_data:
+            logger.debug(f"File list cache hit for key: {cache_key}")
+            return cached_data, status.HTTP_200_OK
 
         async def _list_current_versions(
             session: AsyncSession,
@@ -330,22 +386,17 @@ class FileService:
                 except (ValueError, TypeError):
                     valid_limit = 100
                     valid_offset = 0
-                    logger.warning(f"Invalid limit/offset values: limit={limit}, offset={offset}, using defaults")
+                    
                 
                 # Ensure sort_order has a valid value
                 valid_sort_order = str(sort_order).lower() if sort_order else "desc"
                 if valid_sort_order not in ["asc", "desc"]:
                     valid_sort_order = "desc"
-                    logger.warning(f"Invalid sort_order: {sort_order}, defaulting to 'desc'")
-
+                    
                 # Convert sort_by to string and handle None case
                 sort_by_str = str(sort_by) if sort_by is not None else None
                 
-                logger.info(
-                    f"list_current_versions received: user_id={user_id}, folder={folder}, search={search}, sort_by={sort_by_str}, sort_order={valid_sort_order}, limit={valid_limit}, offset={valid_offset}"
-                )
-                
-                # First get the file records (current versions only)
+                # Build query
                 query = select(FileUploadRecord).where(
                     FileUploadRecord.is_current_version == True
                 )
@@ -353,14 +404,12 @@ class FileService:
                 if user_id:
                     user_id_int = int(user_id)
                     query = query.where(FileUploadRecord.user_id == user_id_int)
-                    logger.info(
-                        f"Filtering by user_id (converted to int): {user_id_int}"
-                    )
+  
                 if folder:
                     query = query.where(FileUploadRecord.folder_path == folder)
-                    logger.info(f"Filtering by folder: {folder}")
 
-                # Add search functionality (file fields only)
+
+                # Add search functionality
                 if search:
                     search_filter = or_(
                         FileUploadRecord.original_filename.ilike(f"%{search}%"),
@@ -369,15 +418,14 @@ class FileService:
                         FileUploadRecord.file_content.ilike(f"%{search}%"),
                     )
                     query = query.where(search_filter)
-                    logger.info(f"Applying search: {search}")
+
 
                 # Apply sorting - safely handle sort_by parameter
                 sort_column = None
-                join_users = False  # Flag to indicate if we need to join with users table
+                join_users = False
 
                 if sort_by_str:
                     sort_by_lower = str(sort_by_str).lower()
-                    logger.info(f"Attempting to sort by: '{sort_by_lower}'")
                     
                     # Map sort_by parameter to actual column names
                     sort_mapping = {
@@ -413,33 +461,32 @@ class FileService:
                                         "user_lastname", "last_name", "lastname", 
                                         "user_email", "email", "user"]:
                             join_users = True
-                            logger.info(f"Will join with users table for sorting by {sort_by_lower}")
+
                         
                         if valid_sort_order == "asc":
                             query = query.order_by(sort_column.asc())
-                            logger.info(f"Sorting by {sort_by_lower} in ASCENDING order")
+                       
                         else:
                             query = query.order_by(sort_column.desc())
-                            logger.info(f"Sorting by {sort_by_lower} in DESCENDING order")
+                           
                     else:
                         logger.warning(f"Invalid sort_by parameter: '{sort_by_lower}'. Valid options: {list(sort_mapping.keys())}")
                 
                 # Join with users table if needed for sorting
                 if join_users:
                     query = query.join(User, FileUploadRecord.user_id == User.id)
-                    logger.info("Joined with users table for sorting")
+
                 
                 # Default sorting if no sort specified
                 if not sort_column:
                     query = query.order_by(FileUploadRecord.created_at.desc())
-                    logger.info("Using default sorting by created_at desc")
+      
 
-                # Count total current versions
+                # Count total
                 count_query = query.with_only_columns(func.count()).order_by(None)
                 total_count_result = await session.execute(count_query)
                 total_count = total_count_result.scalar() or 0
 
-                logger.info(f"Total records found: {total_count}")
 
                 # Get paginated results - use validated limit/offset
                 query = query.offset(valid_offset).limit(valid_limit)
@@ -528,13 +575,17 @@ class FileService:
                         }
                     )
 
-                return {
+                result_data = {
                     "records": records,
                     "total_count": total_count,
                     "search_query": search,
                     "sort_by": sort_by_str,
                     "sort_order": valid_sort_order,
-                }, status.HTTP_200_OK
+                }
+                
+                # Cache the result (5 minutes TTL for lists)
+                await redis_service.cache_file_list(cache_key, result_data, ttl=300)                
+                return result_data, status.HTTP_200_OK
 
             except Exception as e:
                 logger.error(f"Error listing current versions: {e}", exc_info=True)
@@ -699,8 +750,8 @@ class FileService:
     async def get_upload_record(
         self, s3_key: str, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Get a specific upload record by S3 key with status codes"""
-         # Check cache first
+        """Get a specific upload record by S3 key with Redis caching"""
+        # Check cache first
         cached_record = await redis_service.get_cached_file(s3_key)
         if cached_record:
             logger.debug(f"File record {s3_key} retrieved from cache")
@@ -721,8 +772,7 @@ class FileService:
                 record_dict = record.to_dict()
                 
                 # Cache the record after database fetch
-                await redis_service.cache_file(s3_key, record_dict)
-                
+                await redis_service.cache_file(s3_key, record_dict)                
                 return record_dict, status.HTTP_200_OK
                 
 
@@ -752,9 +802,29 @@ class FileService:
 
                 if not upload:
                     return False, status.HTTP_404_NOT_FOUND
-
+                
+                # Get user_id and folder for cache invalidation
+                user_id = upload.user_id
+                folder_path = upload.folder_path
                 await session.delete(upload)
                 await session.commit()
+                
+                # Invalidate caches after successful deletion
+                await redis_service.invalidate_file_cache(s3_key)
+                
+                if user_id:
+                    user_files_key = self._generate_cache_key("user_files", user_id=user_id)
+                    await redis_service.invalidate_file_list_cache(user_files_key)
+                
+                if folder_path:
+                    folder_key = self._generate_cache_key("folder_files", folder=folder_path)
+                    await redis_service.invalidate_file_list_cache(folder_key)
+                
+                # Invalidate all files cache
+                await redis_service.invalidate_file_list_cache("all_files")
+                
+                logger.info(f"Invalidated Redis caches after deleting file: {s3_key}")
+                
                 return True, status.HTTP_200_OK
 
             except Exception as e:
@@ -784,6 +854,10 @@ class FileService:
 
                 if not upload:
                     return None, status.HTTP_404_NOT_FOUND
+                
+                # Store old values for cache invalidation
+                old_user_id = upload.user_id
+                old_folder_path = upload.folder_path
 
                 # Apply updates
                 for key, value in updates.items():
@@ -815,6 +889,32 @@ class FileService:
                     else None,
                 }
 
+                # Invalidate caches after update
+                await redis_service.invalidate_file_cache(s3_key)
+                
+                # Invalidate user caches if user changed
+                if old_user_id != upload.user_id:
+                    if old_user_id:
+                        old_user_key = self._generate_cache_key("user_files", user_id=old_user_id)
+                        await redis_service.invalidate_file_list_cache(old_user_key)
+                    if upload.user_id:
+                        new_user_key = self._generate_cache_key("user_files", user_id=upload.user_id)
+                        await redis_service.invalidate_file_list_cache(new_user_key)
+                
+                # Invalidate folder caches if folder changed
+                if old_folder_path != upload.folder_path:
+                    if old_folder_path:
+                        old_folder_key = self._generate_cache_key("folder_files", folder=old_folder_path)
+                        await redis_service.invalidate_file_list_cache(old_folder_key)
+                    if upload.folder_path:
+                        new_folder_key = self._generate_cache_key("folder_files", folder=upload.folder_path)
+                        await redis_service.invalidate_file_list_cache(new_folder_key)
+                
+                # Invalidate all files cache
+                await redis_service.invalidate_file_list_cache("all_files")
+                
+                logger.info(f"Invalidated Redis caches after updating file: {s3_key}")
+                
                 return record_data, status.HTTP_200_OK
 
             except Exception as e:
@@ -830,5 +930,4 @@ class FileService:
 
 
 # Create global instance
-file_service = FileService()
 file_service = FileService()

@@ -127,8 +127,20 @@ async def upload_file(
                 ],
             )
 
-        # Upload to S3
-        result = await s3_service.upload_file(file, filename, folder)
+        # Upload to S3       
+        try:
+            result = await s3_service.upload_file(file, filename, folder)
+        except HTTPException as s3_error:
+            return MultipleFileUploadResponse(
+                success=False,
+                message="S3 upload failed",
+                error=s3_error.detail,
+                status_code=s3_error.status_code,
+                uploaded_files=[],
+                total_uploaded=0,
+                total_failed=1,
+                errors=[UploadError(filename=file.filename, error=s3_error.detail, status_code=s3_error.status_code)]
+            )
 
         # Parse metadata
         upload_metadata, metadata_error, metadata_status = (
@@ -384,7 +396,19 @@ async def upload_multiple_files(
                     filename = f"{safe_prefix}_{filename}"
 
                 # Upload to S3
-                result = await s3_service.upload_file(file, filename, folder)
+                try:
+                    result = await s3_service.upload_file(file, filename, folder)
+                except HTTPException as s3_error:
+                    return MultipleFileUploadResponse(
+                        success=False,
+                        message="S3 upload failed",
+                        error=s3_error.detail,
+                        status_code=s3_error.status_code,
+                        uploaded_files=[],
+                        total_uploaded=0,
+                        total_failed=1,
+                        errors=[UploadError(filename=file.filename, error=s3_error.detail, status_code=s3_error.status_code)]
+                    )
 
                 # Store in database with processing time
                 db_record, db_status = await file_service.create_upload_record(
@@ -971,7 +995,7 @@ async def get_file_info(
             "can_download": True,
             "can_view": True
         }
-        
+               
         return StandardResponse(
             success=True,
             message="File information retrieved successfully",

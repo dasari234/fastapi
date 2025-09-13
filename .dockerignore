@@ -1,0 +1,6 @@
+gitignore
+.env.example
+venv
+logs
+__pycache__
+init.sql
