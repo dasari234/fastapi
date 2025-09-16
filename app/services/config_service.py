@@ -1,4 +1,3 @@
-#10 sep2025
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
@@ -163,7 +162,7 @@ class ConfigService:
             try:
                 import json
                 return json.loads(value)
-            except:
+            except Exception:
                 return value
         else:
             return value
@@ -187,3 +186,4 @@ class ConfigService:
 
 # Create global instance
 config_service = ConfigService()
+

@@ -82,3 +82,4 @@ def get_logger():
 def get_access_logger():
     """Get the access logger instance."""
     return access_logger
+

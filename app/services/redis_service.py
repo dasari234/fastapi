@@ -22,7 +22,7 @@ class RedisService:
         try:
             # We'll check health on first use instead of blocking here
             self.connection_healthy = True
-        except:
+        except Exception:
             self.connection_healthy = False
     
     async def _ensure_connection(self):

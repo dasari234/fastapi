@@ -9,8 +9,12 @@ from loguru import logger
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import (ACCESS_TOKEN_EXPIRE_MINUTES, ALGORITHM,
-                        REFRESH_TOKEN_EXPIRE_DAYS, SECRET_KEY)
+from app.config import (
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    ALGORITHM,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    SECRET_KEY,
+)
 from app.schemas.auth import TokenData
 from app.services.redis_service import redis_service
 
@@ -148,50 +152,14 @@ class AuthService:
             logger.error(f"Error getting current user: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    # async def authenticate_user(
-    #     self, email: str, password: str, db: AsyncSession
-    # ) -> Tuple[Optional[Dict[str, Any]], int]:
-    #     """Authenticate user with status codes"""
-    #     try:
-    #         from services.user_service import user_service
-
-    #         # Get user by email
-    #         user_data, status_code = await user_service.get_user_by_email(email, db)
-            
-    #         if status_code != status.HTTP_200_OK or not user_data:
-    #             return None, status.HTTP_401_UNAUTHORIZED
-
-    #         # Verify password
-    #         is_valid, error = self.verify_password(password, user_data["password_hash"])
-    #         if not is_valid:
-    #             logger.warning(f"Invalid password for user: {email}")
-    #             return None, status.HTTP_401_UNAUTHORIZED
-    #         if error:
-    #             logger.error(f"Password verification error for user {email}: {error}")
-    #             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-    #         # Check if user is active
-    #         if not user_data.get("is_active", False):
-    #             logger.warning(f"Inactive user attempt: {email}")
-    #             return None, status.HTTP_401_UNAUTHORIZED
-
-    #         # Remove password hash from response
-    #         user_data.pop("password_hash", None)
-    #         return user_data, status.HTTP_200_OK
-
-    #     except Exception as e:
-    #         logger.error(f"Authentication error for user {email}: {e}")
-    #         return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-    
-    
     async def authenticate_user(
         self, email: str, password: str, db: AsyncSession, 
         ip_address: str = None, user_agent: str = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Authenticate user with status codes and login history"""
         try:
-            from app.services.user_service import user_service
             from app.services.login_history_service import create_login_record
+            from app.services.user_service import user_service
 
             # Get user by email
             user_data, status_code = await user_service.get_user_by_email(email, db)

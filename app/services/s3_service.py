@@ -1,11 +1,17 @@
+from io import BytesIO
 from typing import Dict, Optional, Tuple
+
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
-from fastapi import HTTPException, status, UploadFile
+from fastapi import HTTPException, UploadFile, status
 from loguru import logger
-from io import BytesIO
-from app.config import (AWS_ACCESS_KEY_ID, AWS_REGION, AWS_SECRET_ACCESS_KEY,
-                        S3_BUCKET_NAME)
+
+from app.config import (
+    AWS_ACCESS_KEY_ID,
+    AWS_REGION,
+    AWS_SECRET_ACCESS_KEY,
+    S3_BUCKET_NAME,
+)
 
 
 class S3Service:
@@ -21,7 +27,7 @@ class S3Service:
     async def upload_file(self, file: UploadFile, filename: str, folder: Optional[str] = None) -> dict:
         """Upload file to S3 bucket and return presigned URL"""
         try:
-            # DEBUG: Log all input parameters
+
             logger.debug(f"upload_file called with: file={file}, filename='{filename}', folder='{folder}'")
             logger.debug(f"File attributes: filename='{getattr(file, 'filename', 'MISSING')}', content_type='{getattr(file, 'content_type', 'MISSING')}', size={getattr(file, 'size', 'MISSING')}")
             
@@ -39,13 +45,13 @@ class S3Service:
             if not filename:
                 raise ValueError("Filename cannot be empty or whitespace only")
             
-            # DEBUG: Check folder value
+            # Check folder value
             if folder is not None:
                 if not isinstance(folder, str):
                     raise ValueError(f"Folder must be a string or None, got {type(folder)}: {folder}")
                 folder = folder.strip()
                 if not folder:
-                    folder = None  # Treat empty string as None
+                    folder = None  
             
             # Read file content first to get actual size and content
             try:
@@ -83,7 +89,7 @@ class S3Service:
             else:
                 logger.debug(f"Using file content type: {content_type}")
             
-            # DEBUG: Check S3 client and bucket
+            # Check S3 client and bucket
             logger.debug(f"S3 client: {type(self.s3_client)}, bucket: '{self.bucket_name}'")
             if not self.bucket_name or not isinstance(self.bucket_name, str):
                 raise ValueError(f"Invalid bucket name: {self.bucket_name}")

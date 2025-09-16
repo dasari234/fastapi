@@ -9,7 +9,7 @@ from app.schemas.auth import TokenData
 from app.schemas.users import UserRole
 from app.services.auth_service import auth_service
 
-# --- OAuth2 scheme ---
+# --- OAuth2 schema ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> Tuple[Optional[TokenData], int]:

@@ -31,7 +31,6 @@ if not DATABASE_URL:
 parsed_url = urlparse(DATABASE_URL)
 
 # --- Application Settings ---
-
 ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
 DEBUG: bool = ENVIRONMENT == "development"
 LOG_LEVEL = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL)
@@ -48,9 +47,9 @@ if parsed_url.query:
 ssl_mode: str = query_params.pop("sslmode", "prefer")
 
 if parsed_url.hostname in {"localhost", "127.0.0.1", "postgres", "redis"}:
-    ssl_mode = "disable"
+    ssl_mode = os.getenv("SSL_MODE", "SSL_MODE")
 elif ENVIRONMENT == "development":
-    ssl_mode = "disable"
+    ssl_mode = os.getenv("SSL_MODE", "SSL_MODE")
 
 # --- Reconstruct DB URL without sslmode ---
 new_query = "&".join([f"{k}={v}" for k, v in query_params.items()])
@@ -72,8 +71,6 @@ POOL_SIZE = int(os.getenv("DB_POOL_SIZE", 5))
 MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", 10))
 POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", 30))
 POOL_RECYCLE = int(os.getenv("DB_POOL_RECYCLE", 1800))
-
-
 
 # --- AWS / S3 Configuration ---
 AWS_ACCESS_KEY_ID: Optional[str] = os.getenv("AWS_ACCESS_KEY_ID")

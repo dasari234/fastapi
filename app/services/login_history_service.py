@@ -9,36 +9,10 @@ from app.models.login_history import LoginHistory
 
 
 class LoginHistoryService:
-    # @staticmethod
-    # async def create_login_record(
-    #     db: AsyncSession,
-    #     user_id: int,
-    #     ip_address: str = None,
-    #     user_agent: str = None,
-    #     login_status: str = "success",
-    #     failure_reason: str = None,
-    # ) -> Tuple[Optional[LoginHistory], int]:
-    #     """Create login history record with standardized response"""
-    #     try:
-    #         login_record = LoginHistory(
-    #             user_id=user_id,
-    #             ip_address=ip_address,
-    #             user_agent=user_agent,
-    #             login_status=login_status,
-    #             failure_reason=failure_reason,
-    #         )
-    #         db.add(login_record)
-    #         await db.commit()
-    #         await db.refresh(login_record)
-    #         return login_record, 200
-    #     except Exception as e:
-    #         await db.rollback()
-    #         logger.error(f"Error creating login record: {e}")
-    #         return None, 500
     @staticmethod
     async def create_login_record(
         db: AsyncSession,
-        user_id: Optional[int] = None,  # Keep as Optional for interface
+        user_id: Optional[int] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         login_status: str = "success",

@@ -32,7 +32,7 @@ class JWTBearer(HTTPBearer):
         try:
             payload = auth_service.verify_token(jwtoken)
             return payload is not None
-        except:
+        except Exception:
             return False
 
 # Create global instance

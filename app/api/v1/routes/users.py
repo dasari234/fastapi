@@ -8,8 +8,12 @@ from app.api.v1.dependencies import get_current_user, require_role
 from app.database import get_db
 from app.schemas.auth import TokenData
 from app.schemas.base import StandardResponse
-from app.schemas.users import (LoginStatsResponse, UserLoginHistoryResponse,
-                               UserRole, UserUpdate)
+from app.schemas.users import (
+    LoginStatsResponse,
+    UserLoginHistoryResponse,
+    UserRole,
+    UserUpdate,
+)
 from app.services import login_history_service
 from app.services.auth_service import auth_service
 from app.services.user_service import user_service
@@ -84,6 +88,11 @@ async def get_current_user_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+# Define allowed sort columns
+ALLOWED_SORT_COLUMNS = {
+    "id", "email", "first_name", "last_name", "role", 
+    "is_active", "created_at", "updated_at"
+}
 
 @router.get(
     "",
@@ -100,12 +109,40 @@ async def list_users(
     limit: int = Query(10, ge=1, le=100, description="Items per page"),
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    search: Optional[str] = Query(None, description="Search in email, first name, last name, or role"),
+    sort_by: str = Query("created_at", description=f"Sort by: {', '.join(ALLOWED_SORT_COLUMNS)}"),
+    sort_order: str = Query("desc", description="Sort order: 'asc' or 'desc'"),
     current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ):
     """List all users with pagination and filtering (Admin only)"""
     try:
-        result = await user_service.list_users(page, limit, role, is_active, db)
+        # Validate sort parameters
+        if sort_by not in ALLOWED_SORT_COLUMNS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid sort column. Allowed values: {', '.join(ALLOWED_SORT_COLUMNS)}"
+            )
+        
+        if sort_order.lower() not in ["asc", "desc"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid sort order. Use 'asc' or 'desc'"
+            )
+            
+        result, status_code = await user_service.list_users(
+            page=page,
+            limit=limit,
+            role=role,
+            is_active=is_active,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            db=db
+        )
+        
+        if status_code != status.HTTP_200_OK:
+            raise HTTPException(status_code=status_code, detail="Failed to retrieve users")
 
         return StandardResponse(
             success=True,
@@ -604,15 +641,4 @@ async def get_user_login_history_admin(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve login history",
         )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve login history",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve login history",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve login history",
-        )
+
