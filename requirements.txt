@@ -19,3 +19,4 @@ loguru==0.7.3
 chardet==5.2.0
 redis==4.3.4
 aioredis==2.0.1
+mangum==0.17.0

@@ -13,15 +13,35 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# --- Constants ---
+# --- Environment Detection ---
+def is_lambda_env() -> bool:
+    """Check if running in AWS Lambda environment"""
+    return bool(os.environ.get('AWS_LAMBDA_FUNCTION_NAME'))
 
-DEFAULT_ENVIRONMENT = "production"
-DEFAULT_LOG_LEVEL = "INFO"
-DEFAULT_AWS_REGION = "us-east-1"
-DEFAULT_VERSION = "2.0.0"
+def is_development_env() -> bool:
+    """Check if running in development environment"""
+    env = os.getenv("ENVIRONMENT", "").lower()
+    return env in ["development", "dev", "local", "test"]
+
+# --- Constants ---
+DEFAULT_ENVIRONMENT = "development" if is_development_env() else "production"
+DEFAULT_LOG_LEVEL = "DEBUG" if is_development_env() else "INFO"
+DEFAULT_AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+DEFAULT_VERSION = "1.0.0"
 
 MAX_FILE_SIZE_MB = 100
 MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024  # bytes
+
+# --- Application Settings ---
+ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
+DEBUG: bool = is_development_env()
+LOG_LEVEL = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL)
+VERSION = os.getenv("APP_VERSION", DEFAULT_VERSION)
+
+# --- AWS Lambda Specific Settings ---
+IS_LAMBDA = is_lambda_env()
+LAMBDA_FUNCTION_NAME = os.getenv("AWS_LAMBDA_FUNCTION_NAME", "")
+LAMBDA_FUNCTION_VERSION = os.getenv("AWS_LAMBDA_FUNCTION_VERSION", "")
 
 # --- Database Configuration ---
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -29,12 +49,6 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
 parsed_url = urlparse(DATABASE_URL)
-
-# --- Application Settings ---
-ENVIRONMENT = os.getenv("ENVIRONMENT", DEFAULT_ENVIRONMENT)
-DEBUG: bool = ENVIRONMENT == "development"
-LOG_LEVEL = os.getenv("LOG_LEVEL", DEFAULT_LOG_LEVEL)
-VERSION = os.getenv("APP_VERSION", DEFAULT_VERSION)
 
 # --- Extract query params ---
 query_params: Dict[str, str] = {}

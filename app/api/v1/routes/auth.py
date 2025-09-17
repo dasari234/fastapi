@@ -1,11 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from datetime import datetime, timezone
+from typing import Optional, Tuple
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.dependencies import get_current_user, get_db_session
 from app.database import get_db
-from app.schemas.auth import (PasswordReset, PasswordResetRequest,
-                              RefreshTokenRequest, Token)
+from app.schemas.auth import (
+    PasswordReset,
+    PasswordResetRequest,
+    RefreshTokenRequest,
+    Token,
+    TokenData,
+)
 from app.schemas.base import StandardResponse
 from app.schemas.users import UserCreate
 from app.services.auth_service import auth_service
@@ -301,6 +310,63 @@ async def refresh_token(
         )
 
 
+@router.post(
+    "/logout",
+    response_model=StandardResponse,
+    summary="User logout",
+    description="Invalidate user token and log logout activity",
+    responses={
+        200: {"description": "Successfully logged out"},
+        401: {"description": "Invalid or expired token"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def logout(
+    response: Response,
+    current_user: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Logout user by invalidating the token and recording logout activity
+    """
+    try:
+        
+        current_user, status_code = current_user
+
+        if not current_user or status_code != status.HTTP_200_OK:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    
+        # Invalidate the token (add to blacklist)
+        await auth_service.invalidate_token(
+            current_user.token, db
+        )
+                
+        # Record logout activity in login history
+        await login_history_service.create_logout_record(
+            db=db,
+            user_id=current_user.user_id,
+            logout_time=datetime.now(timezone.utc)
+        )
+        
+        # Clear the authentication cookie if you're using cookies
+        response.delete_cookie(key="access_token")
+        
+        return StandardResponse(
+            success=True,
+            message="Successfully logged out",
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Logout failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Logout failed due to server error"
+        )
+
+
 @router.post("/request-password-reset", summary="Request password reset")
 async def request_password_reset(request: PasswordResetRequest):
     """Request password reset (placeholder - implement email service)"""
@@ -313,7 +379,5 @@ async def reset_password(reset_data: PasswordReset):
     return {
         "message": "Password reset successful (implementation required)"
     } @ router.post("/reset-password", summary="Reset password")
-    """Reset password with token"""
-    return {
-        "message": "Password reset successful (implementation required)"
-    } @ router.post("/reset-password", summary="Reset password")
+    
+    

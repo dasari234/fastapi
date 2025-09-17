@@ -15,6 +15,8 @@ from app.config import (
     REFRESH_TOKEN_EXPIRE_DAYS,
     SECRET_KEY,
 )
+from app.database import get_db_context
+from app.models.user import TokenBlacklist
 from app.schemas.auth import TokenData
 from app.services.redis_service import redis_service
 
@@ -86,9 +88,19 @@ class AuthService:
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
     @staticmethod
-    def verify_token(token: str) -> Tuple[Optional[Dict[str, Any]], int]:
+    async def verify_token(token: str, db: AsyncSession = Depends(get_db_context)) -> Tuple[Optional[Dict[str, Any]], int]:
         """Verify JWT token with status codes"""
         try:
+            from sqlalchemy import select
+            result = await db.execute(
+                select(TokenBlacklist).where(TokenBlacklist.token == token)
+            )
+            blacklisted = result.scalar_one_or_none()
+            
+            if blacklisted:
+                logger.warning(f"Attempt to use blacklisted token: {token}")
+                return None, status.HTTP_401_UNAUTHORIZED
+        
             # Basic token validation
             if not token or not isinstance(token, str):
                 return None, status.HTTP_401_UNAUTHORIZED
@@ -124,7 +136,10 @@ class AuthService:
                 return TokenData(**cached_user), status.HTTP_200_OK
             
             # Verify token
-            payload, status_code = self.verify_token(token)
+            from app.database import get_db_context
+            async with get_db_context() as db:
+                payload, status_code = await self.verify_token(token, db)
+                
             if status_code != status.HTTP_200_OK or not payload:
                 return None, status.HTTP_401_UNAUTHORIZED
             
@@ -140,11 +155,12 @@ class AuthService:
             user_data = TokenData(
                 user_id=user_id,
                 email=email,
-                role=role
+                role=role,
+                token=token
             )
             
             # Cache the user data
-            await redis_service.cache_token(token, user_data.dict())
+            await redis_service.cache_token(token, user_data.model_dump())
             
             return user_data, status.HTTP_200_OK
             
@@ -152,6 +168,50 @@ class AuthService:
             logger.error(f"Error getting current user: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
+    async def invalidate_token(
+            self, 
+            token: str, 
+            db: AsyncSession = None
+        ) -> Tuple[bool, int]:
+            """
+            Invalidate a JWT token by adding it to the blacklist
+            """
+            async def _invalidate_token(session: AsyncSession) -> Tuple[bool, int]:
+                try:
+                    # Check if token is already blacklisted
+                    from sqlalchemy import select
+                    result = await session.execute(
+                        select(TokenBlacklist).where(TokenBlacklist.token == token)
+                    )
+                    existing_token = result.scalar_one_or_none()
+                    
+                    if existing_token:
+                        logger.info(f"Token already blacklisted: {token}")
+                        return True, status.HTTP_200_OK
+                    
+                    # Add token to blacklist
+                    blacklisted_token = TokenBlacklist(
+                        token=token,
+                        blacklisted_at=datetime.now(timezone.utc)
+                    )
+                    
+                    session.add(blacklisted_token)
+                    await session.commit()
+                    
+                    logger.info("Token successfully blacklisted for user")
+                    return True, status.HTTP_200_OK
+                    
+                except Exception as e:
+                    await session.rollback()
+                    logger.error(f"Error invalidating token: {e}", exc_info=True)
+                    return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+            
+            if db:
+                return await _invalidate_token(db)
+            else:
+                async with get_db_context() as session:
+                    return await _invalidate_token(session)
+            
     async def authenticate_user(
         self, email: str, password: str, db: AsyncSession, 
         ip_address: str = None, user_agent: str = None

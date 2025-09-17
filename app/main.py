@@ -10,9 +10,9 @@ from app.api.v1.routes.health import router as health_router
 from app.api.v1.routes.root import router as root_router
 from app.api.v1.routes.users import router as users_router
 from app.config import DEBUG, ENVIRONMENT, VERSION
+from app.core.redis_config import close_redis_pool, init_redis_pool
 from app.database import close_db, init_db
 from app.middleware.cors import setup_cors
-from app.redis.base_config import close_redis_pool, init_redis_pool
 from app.utils.exception_handling import global_exception_handler
 from app.utils.logging_config import setup_logging
 from app.utils.logging_request import log_requests_middleware

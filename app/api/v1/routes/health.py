@@ -8,8 +8,7 @@ from sqlalchemy.sql import text
 
 from app.config import ENVIRONMENT
 from app.database import get_db
-from app.schemas.health import (DBHealthResponse, HealthResponse,
-                                SimpleHealthResponse)
+from app.schemas.health import DBHealthResponse, HealthResponse, SimpleHealthResponse
 from app.services.redis_service import redis_service
 
 router = APIRouter(tags=["Health"], prefix="/health")
@@ -252,7 +251,7 @@ async def check_redis_health():
 async def redis_status():
     """Get detailed Redis connection status"""
     from app.config import REDIS_HOST, REDIS_PORT, REDIS_SSL
-    from app.redis.base_config import redis_pool
+    from app.core.redis_config import redis_pool
     
     status_info = {
         "configured_host": REDIS_HOST,

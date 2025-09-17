@@ -16,35 +16,37 @@ class LoginHistoryService:
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
         login_status: str = "success",
-        failure_reason: Optional[str] = None
+        failure_reason: Optional[str] = None,
     ) -> Optional[LoginHistory]:
         """
         Create a login history record - handle NOT NULL constraint gracefully
         """
         # Skip creating record if user_id is None due to NOT NULL constraint
         if user_id is None:
-            logger.warning("Skipping login record due to null user_id (NOT NULL constraint)")
+            logger.warning(
+                "Skipping login record due to null user_id (NOT NULL constraint)"
+            )
             return None
-        
+
         try:
             login_record = LoginHistory(
                 user_id=user_id,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 login_status=login_status,
-                failure_reason=failure_reason
+                failure_reason=failure_reason,
             )
-            
+
             db.add(login_record)
             await db.commit()
             await db.refresh(login_record)
             return login_record
-            
+
         except Exception as e:
             await db.rollback()
             logger.error(f"Error creating login record: {e}")
             return None
-    
+
     @staticmethod
     async def get_last_login_time(
         db: AsyncSession, user_id: int
@@ -179,7 +181,7 @@ class LoginHistoryService:
         email: str,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
-        failure_reason: str = "Invalid credentials"
+        failure_reason: str = "Invalid credentials",
     ) -> None:
         """
         Create a record for failed login attempts (including non-existent users)
@@ -190,7 +192,48 @@ class LoginHistoryService:
             f"Failed login attempt - Email: {email}, "
             f"IP: {ip_address}, Reason: {failure_reason}"
         )
-    
+
+    @staticmethod
+    async def create_logout_record(
+        db: AsyncSession,
+        user_id: int,
+        logout_time: datetime,
+    ) -> Tuple[Optional[LoginHistory], int]:
+        """Create logout record by updating the latest login record"""
+        try:
+            # Find the most recent successful login for this user
+            from sqlalchemy import desc, select
+
+            result = await db.execute(
+                select(LoginHistory)
+                .where(
+                    LoginHistory.user_id == user_id,
+                    LoginHistory.login_status == "success",
+                )
+                .order_by(desc(LoginHistory.login_time))
+                .limit(1)
+            )
+            latest_login = result.scalar_one_or_none()
+
+            if latest_login:
+                # Update the login record with logout time
+                latest_login.logout_time = logout_time
+                db.add(latest_login)
+                await db.commit()
+                await db.refresh(latest_login)
+
+                logger.info(f"Logout recorded for user {user_id} at {logout_time}")
+                return latest_login, 200
+            else:
+                logger.warning(
+                    f"No login record found for user {user_id} to update with logout time"
+                )
+                return None, 404
+
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error creating logout record: {e}")
+            return None, 500
 
 
 # Create global instance

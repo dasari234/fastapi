@@ -1,3 +1,4 @@
+
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, func
 from sqlalchemy.orm import relationship
 
@@ -32,3 +33,13 @@ class User(Base):
         foreign_keys="FileHistory.action_by"
     )
 
+
+class TokenBlacklist(Base):
+    __tablename__ = "token_blacklist"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String(500), unique=True, index=True, nullable=False)
+    blacklisted_at = Column(DateTime(timezone=True), nullable=False)
+    
+    def __repr__(self):
+        return f"<TokenBlacklist {self.token}>"

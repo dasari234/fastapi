@@ -30,6 +30,7 @@ class TokenData(BaseModel):
     user_id: int = Field(..., description="User ID")
     email: str = Field(..., description="User email")
     role: UserRole = Field(..., description="User role")
+    token: str
 
 
 class UserLogin(BaseModel):
