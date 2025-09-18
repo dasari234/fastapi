@@ -132,3 +132,13 @@ CACHE_TTL_TOKEN = int(os.getenv("CACHE_TTL_TOKEN", 300))  # 5 minutes
 CACHE_TTL_USER = int(os.getenv("CACHE_TTL_USER", 3600))   # 1 hour
 CACHE_TTL_FILE = int(os.getenv("CACHE_TTL_FILE", 1800))   # 30 minutes
 
+
+PASSWORD_RESET_TOKEN_EXPIRE_MINUTES = int(os.getenv("PASSWORD_RESET_TOKEN_EXPIRE_MINUTES", 30))
+PASSWORD_RESET_BASE_URL = os.getenv("PASSWORD_RESET_BASE_URL", "https://yourapp.com/reset-password")
+
+# Email configuration
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+FROM_EMAIL = os.getenv("FROM_EMAIL", "noreply@yourapp.com")

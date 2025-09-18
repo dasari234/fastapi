@@ -8,17 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user, get_db_session
 from app.database import get_db
-from app.schemas.auth import (
-    PasswordReset,
-    PasswordResetRequest,
-    RefreshTokenRequest,
-    Token,
-    TokenData,
-)
+from app.schemas.auth import PasswordResetRequest, RefreshTokenRequest, Token, TokenData
 from app.schemas.base import StandardResponse
-from app.schemas.users import UserCreate
+from app.schemas.users import PasswordResetVerify, UserCreate
 from app.services.auth_service import auth_service
 from app.services.login_history_service import login_history_service
+from app.services.password_reset_service import password_reset_service
 from app.services.user_service import user_service
 
 router = APIRouter(tags=["Authentication"], prefix="/auth")
@@ -87,23 +82,6 @@ async def login(
         # Get client info for logging
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
-
-        # if status_code == status.HTTP_404_NOT_FOUND:
-        #     # Record failed login attempt for non-existent user
-        #     await login_history_service.create_login_record(
-        #         db=db,
-        #         user_id=None,
-        #         ip_address=ip_address,
-        #         user_agent=user_agent,
-        #         login_status="failed",
-        #         failure_reason="User not found",
-        #     )
-        #     return StandardResponse(
-        #         success=False,
-        #         message="Login failed",
-        #         error="Invalid credentials",
-        #         status_code=status.HTTP_401_UNAUTHORIZED,
-        #     )
         
         if status_code == status.HTTP_404_NOT_FOUND:
             # Use the new method for failed attempts without user_id
@@ -366,18 +344,147 @@ async def logout(
             detail="Logout failed due to server error"
         )
 
+@router.post(
+    "/forgot-password",
+    response_model=StandardResponse,
+    summary="Request password reset",
+    description="Send password reset email to user",
+    responses={
+        202: {"description": "Reset email sent if account exists"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def forgot_password(
+    request: PasswordResetRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Request password reset by email"""
+    try:
+        success, status_code = await password_reset_service.send_password_reset_email(request.email, db)
+        
+        if status_code == status.HTTP_200_OK:
+            return StandardResponse(
+                success=True,
+                message="If an account with that email exists, a password reset link has been sent",
+                status_code=status.HTTP_202_ACCEPTED
+            )
+        else:
+            return StandardResponse(
+                success=False,
+                message="Error processing password reset request",
+                status_code=status_code
+            )
+            
+    except Exception as e:
+        logger.error(f"Password reset request failed: {e}")
+        return StandardResponse(
+            success=False,
+            message="Error processing password reset request",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
 
-@router.post("/request-password-reset", summary="Request password reset")
-async def request_password_reset(request: PasswordResetRequest):
-    """Request password reset (placeholder - implement email service)"""
-    return {"message": "Password reset email sent (implementation required)"}
+@router.post(
+    "/reset-password",
+    response_model=StandardResponse,
+    summary="Reset password",
+    description="Reset password using valid reset token",
+    responses={
+        200: {"description": "Password reset successful"},
+        400: {"description": "Invalid token or password"},
+        404: {"description": "Token not found"},
+        410: {"description": "Token expired"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def reset_password(
+    request: PasswordResetVerify,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Reset password using valid reset token"""
+    try:
+        success, status_code = await password_reset_service.reset_password(
+            request.token, request.new_password, db
+        )
+        
+        if success:
+            return StandardResponse(
+                success=True,
+                message="Password reset successfully",
+                status_code=status.HTTP_200_OK
+            )
+        else:
+            if status_code == status.HTTP_404_NOT_FOUND:
+                message = "Invalid or expired reset token"
+            elif status_code == status.HTTP_410_GONE:
+                message = "Reset token has expired"
+            else:
+                message = "Error resetting password"
+                
+            return StandardResponse(
+                success=False,
+                message=message,
+                status_code=status_code
+            )
+            
+    except Exception as e:
+        logger.error(f"Password reset failed: {e}")
+        return StandardResponse(
+            success=False,
+            message="Error resetting password",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+@router.get(
+    "/verify-reset-token/{token}",
+    response_model=StandardResponse,
+    summary="Verify reset token",
+    description="Check if a password reset token is valid",
+    responses={
+        200: {"description": "Token is valid"},
+        404: {"description": "Token not found"},
+        410: {"description": "Token expired"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def verify_reset_token(
+    token: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Verify if a password reset token is valid"""
+    try:
+        email, status_code = await password_reset_service.verify_reset_token(token, db)
+        
+        if status_code == status.HTTP_200_OK:
+            return StandardResponse(
+                success=True,
+                message="Token is valid",
+                status_code=status.HTTP_200_OK
+            )
+        else:
+            if status_code == status.HTTP_404_NOT_FOUND:
+                message = "Invalid reset token"
+            elif status_code == status.HTTP_410_GONE:
+                message = "Reset token has expired"
+            else:
+                message = "Error verifying token"
+                
+            return StandardResponse(
+                success=False,
+                message=message,
+                status_code=status_code
+            )
+            
+    except Exception as e:
+        logger.error(f"Token verification failed: {e}")
+        return StandardResponse(
+            success=False,
+            message="Error verifying token",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        
 
 
-@router.post("/reset-password", summary="Reset password")
-async def reset_password(reset_data: PasswordReset):
-    """Reset password with token"""
-    return {
-        "message": "Password reset successful (implementation required)"
-    } @ router.post("/reset-password", summary="Reset password")
     
     

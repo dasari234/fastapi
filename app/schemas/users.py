@@ -204,3 +204,40 @@ class UserLoginHistoryResponse(BaseModel):
                 }
             }
         }
+        
+class PasswordResetRequest(BaseModel):
+    email: EmailStr = Field(..., description="User email address")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "email": "user@example.com"
+            }
+        }
+        
+class PasswordResetVerify(BaseModel):
+    token: str = Field(..., description="Password reset token")
+    new_password: str = Field(..., min_length=8, description="New password")
+    
+    @validator('new_password')
+    def validate_password(cls, v):
+        """Validate password strength"""
+        if len(v) < 8:
+            raise ValueError('Password must be at least 8 characters long')
+        if not re.search(r'[A-Z]', v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not re.search(r'[a-z]', v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not re.search(r'[0-9]', v):
+            raise ValueError('Password must contain at least one digit')
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', v):
+            raise ValueError('Password must contain at least one special character')
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "token": "reset_token_here",
+                "new_password": "NewPassword123!"
+            }
+        }

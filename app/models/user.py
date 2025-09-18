@@ -1,5 +1,5 @@
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, func
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String, func
 from sqlalchemy.orm import relationship
 
 from app.schemas.base import Base
@@ -43,3 +43,22 @@ class TokenBlacklist(Base):
     
     def __repr__(self):
         return f"<TokenBlacklist {self.token}>"
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(255), nullable=False, index=True)
+    token = Column(String(100), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    
+    # Index for better performance
+    __table_args__ = (
+        Index("ix_reset_token_token", "token"),
+        Index("ix_reset_token_email", "email"),
+        Index("ix_reset_token_expires", "expires_at"),
+    )
+    
+    

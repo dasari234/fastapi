@@ -6,7 +6,10 @@ from sqlalchemy import String, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
-from app.models.user import User
+from app.models.file_history import FileHistory
+from app.models.files import FileUploadRecord
+from app.models.login_history import LoginHistory
+from app.models.user import PasswordResetToken, TokenBlacklist, User
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services.auth_service import auth_service
 from app.services.redis_service import redis_service
@@ -271,17 +274,49 @@ class UserService:
                 if not user:
                     return False, status.HTTP_404_NOT_FOUND
 
+                # 1. Delete login history
+                await session.execute(
+                    delete(LoginHistory).where(LoginHistory.user_id == user_id)
+                )
+                logger.info(f"Deleted login history for user {user_id}")
+
+                # 2. Delete file actions history
+                await session.execute(
+                    delete(FileHistory).where(FileHistory.action_by == user_id)
+                )
+                logger.info(f"Deleted file actions history for user {user_id}")
+
+                # 3. File uploads
+                await session.execute(
+                    delete(FileUploadRecord).where(FileUploadRecord.user_id == user_id)
+                )
+                logger.info(f"Deleted file uploads for user {user_id}")
+                
+                # 4. Delete password reset tokens
+                await session.execute(
+                    delete(PasswordResetToken).where(PasswordResetToken.email == user.email)
+                )
+                logger.info(f"Deleted password reset tokens for user {user_id}")
+                
+                # 5. Delete token blacklist entries (if applicable)
+                await session.execute(
+                    delete(TokenBlacklist).where(TokenBlacklist.token.contains(f"user_id:{user_id}")) 
+                )
+
                 # Get email for cache invalidation
                 user_email = user.email
 
                 # Delete user
-                await session.execute(delete(User).where(User.id == user_id))
+                # await session.execute(delete(User).where(User.id == user_id))
+                await session.delete(user)
                 await session.commit()
 
                 # Invalidate cache
                 await redis_service.invalidate_user(user_id)
                 await redis_service.invalidate_user_by_email(user_email)
-
+                
+                logger.info(f"Successfully deleted user {user_id}")
+                
                 return True, status.HTTP_200_OK
 
             except Exception as e:
