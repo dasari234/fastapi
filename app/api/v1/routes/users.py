@@ -14,9 +14,7 @@ from app.schemas.users import (
     UserRole,
     UserUpdate,
 )
-from app.services import login_history_service
-from app.services.auth_service import auth_service
-from app.services.user_service import user_service
+from app.services import auth_service, login_history_service, user_service
 
 router = APIRouter(tags=["Users"], prefix="/users")
 
@@ -88,11 +86,19 @@ async def get_current_user_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+
 # Define allowed sort columns
 ALLOWED_SORT_COLUMNS = {
-    "id", "email", "first_name", "last_name", "role", 
-    "is_active", "created_at", "updated_at"
+    "id",
+    "email",
+    "first_name",
+    "last_name",
+    "role",
+    "is_active",
+    "created_at",
+    "updated_at",
 }
+
 
 @router.get(
     "",
@@ -109,8 +115,12 @@ async def list_users(
     limit: int = Query(10, ge=1, le=100, description="Items per page"),
     role: Optional[UserRole] = Query(None, description="Filter by role"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    search: Optional[str] = Query(None, description="Search in email, first name, last name, or role"),
-    sort_by: str = Query("created_at", description=f"Sort by: {', '.join(ALLOWED_SORT_COLUMNS)}"),
+    search: Optional[str] = Query(
+        None, description="Search in email, first name, last name, or role"
+    ),
+    sort_by: str = Query(
+        "created_at", description=f"Sort by: {', '.join(ALLOWED_SORT_COLUMNS)}"
+    ),
     sort_order: str = Query("desc", description="Sort order: 'asc' or 'desc'"),
     current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
@@ -121,15 +131,15 @@ async def list_users(
         if sort_by not in ALLOWED_SORT_COLUMNS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid sort column. Allowed values: {', '.join(ALLOWED_SORT_COLUMNS)}"
+                detail=f"Invalid sort column. Allowed values: {', '.join(ALLOWED_SORT_COLUMNS)}",
             )
-        
+
         if sort_order.lower() not in ["asc", "desc"]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid sort order. Use 'asc' or 'desc'"
+                detail="Invalid sort order. Use 'asc' or 'desc'",
             )
-            
+
         result, status_code = await user_service.list_users(
             page=page,
             limit=limit,
@@ -138,11 +148,13 @@ async def list_users(
             search=search,
             sort_by=sort_by,
             sort_order=sort_order,
-            db=db
+            db=db,
         )
-        
+
         if status_code != status.HTTP_200_OK:
-            raise HTTPException(status_code=status_code, detail="Failed to retrieve users")
+            raise HTTPException(
+                status_code=status_code, detail="Failed to retrieve users"
+            )
 
         return StandardResponse(
             success=True,
@@ -231,7 +243,7 @@ async def get_user(
 @router.put(
     "/{user_id}",
     response_model=StandardResponse,
-    summary="Update user (Admin only)",
+    summary="Update user information",
     responses={
         200: {"description": "User updated successfully"},
         403: {"description": "Forbidden - insufficient permissions"},
@@ -242,11 +254,47 @@ async def get_user(
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
-    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update user information (Admin only)"""
+    """Update user information - users can update their own profile, admins can update any user"""
     try:
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            return StandardResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status,
+            )
+
+        # Check if user is trying to update their own profile or is an admin
+        if current_user.user_id != user_id and current_user.role != UserRole.ADMIN:
+            return StandardResponse(
+                success=False,
+                message="Access denied",
+                error="You can only update your own profile",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Non-admin users cannot change their role or is_active status
+        if current_user.role != UserRole.ADMIN:
+            # Create a copy of the update data without restricted fields
+            restricted_fields = ["role", "is_active"]
+            update_data = user_data.model_dump(exclude_unset=True)
+
+            # Check if user is trying to modify restricted fields
+            for field in restricted_fields:
+                if field in update_data:
+                    return StandardResponse(
+                        success=False,
+                        message="Access denied",
+                        error=f"You cannot modify the {field} field",
+                        status_code=status.HTTP_403_FORBIDDEN,
+                    )
+
+        # Perform the update
         user_response, status_code = await user_service.update_user(
             user_id, user_data, db
         )
@@ -266,6 +314,16 @@ async def update_user(
                 error="Internal server error",
                 status_code=status_code,
             )
+
+        # Send notification about profile update
+        try:
+            import asyncio
+
+            from app.hooks.notification_hooks import notify_profile_updated
+
+            asyncio.create_task(notify_profile_updated(user_id, user_response))
+        except Exception as e:
+            logger.warning(f"Failed to send profile update notification: {e}")
 
         return StandardResponse(
             success=True,
@@ -641,4 +699,3 @@ async def get_user_login_history_admin(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve login history",
         )
-

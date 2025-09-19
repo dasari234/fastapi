@@ -1,20 +1,30 @@
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
-                     Request, UploadFile, status)
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user, get_db_session
 from app.schemas.base import StandardResponse
-from app.schemas.files import (DeleteFileResponse, MultipleFileUploadResponse,
-                               UploadedFileInfo, UploadError)
+from app.schemas.files import (
+    DeleteFileResponse,
+    MultipleFileUploadResponse,
+    UploadedFileInfo,
+    UploadError,
+)
+from app.services import file_history_service, file_service, s3_service
 from app.services.auth_service import TokenData
-from app.services.file_history_service import \
-    file_history_service  # 10 sep2025
-from app.services.file_service import file_service
-from app.services.s3_service import s3_service
 from app.utils.content_processor import ContentProcessor
 from app.utils.file_validator import FileValidator
 from app.utils.metadata_handler import MetadataHandler

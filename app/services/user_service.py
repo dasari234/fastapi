@@ -6,13 +6,13 @@ from sqlalchemy import String, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
+from app.hooks.notification_hooks import notify_user_created
 from app.models.file_history import FileHistory
 from app.models.files import FileUploadRecord
 from app.models.login_history import LoginHistory
 from app.models.user import PasswordResetToken, TokenBlacklist, User
 from app.schemas.users import UserCreate, UserRole, UserUpdate
-from app.services.auth_service import auth_service
-from app.services.redis_service import redis_service
+from app.services import auth_service, redis_service
 
 
 class UserService:
@@ -71,6 +71,11 @@ class UserService:
                 # Cache the new user
                 await redis_service.cache_user(user.id, user_response)
                 await redis_service.cache_user_by_email(user.email, user_response)
+                
+                # Send notification
+                if user_response and status == status.HTTP_201_CREATED:                    
+                    import asyncio
+                    asyncio.create_task(notify_user_created(user.id, user_response))
 
                 return user_response, status.HTTP_201_CREATED
 
@@ -84,6 +89,7 @@ class UserService:
         else:
             async with get_db_context() as session:
                 return await _create_user(session)
+            
 
     async def get_user_by_id(
         self, user_id: int, db: AsyncSession = None
@@ -99,9 +105,22 @@ class UserService:
             session: AsyncSession,
         ) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
-                result = await session.execute(select(User).where(User.id == user_id))
-                user = result.scalar_one_or_none()
-
+                # Use a more efficient query with only needed columns
+                result = await session.execute(
+                    select(
+                        User.id,
+                        User.email,
+                        User.first_name,
+                        User.last_name,
+                        User.password_hash,
+                        User.role,
+                        User.is_active,
+                        User.created_at,
+                        User.updated_at
+                    ).where(User.id == user_id)
+                )
+                user = result.first()  # Use first() instead of scalar_one_or_none() for specific columns
+                
                 if not user:
                     return None, status.HTTP_404_NOT_FOUND
 
@@ -110,14 +129,11 @@ class UserService:
                     "email": user.email,
                     "first_name": user.first_name,
                     "last_name": user.last_name,
+                    "password_hash": user.password_hash,
                     "role": user.role,
                     "is_active": user.is_active,
-                    "created_at": user.created_at.isoformat()
-                    if user.created_at
-                    else None,
-                    "updated_at": user.updated_at.isoformat()
-                    if user.updated_at
-                    else None,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "updated_at": user.updated_at.isoformat() if user.updated_at else None,
                 }
 
                 # Cache the user data

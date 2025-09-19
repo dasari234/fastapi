@@ -1,20 +1,23 @@
+# [file name]: app/api/v1/routes/auth.py
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user, get_db_session
 from app.database import get_db
-from app.schemas.auth import PasswordResetRequest, RefreshTokenRequest, Token, TokenData
+from app.schemas.auth import PasswordResetRequest, RefreshTokenRequest, TokenData
 from app.schemas.base import StandardResponse
 from app.schemas.users import PasswordResetVerify, UserCreate
-from app.services.auth_service import auth_service
-from app.services.login_history_service import login_history_service
-from app.services.password_reset_service import password_reset_service
-from app.services.user_service import user_service
+from app.services import (
+    auth_service,
+    login_history_service,
+    password_reset_service,
+    user_service,
+)
 
 router = APIRouter(tags=["Authentication"], prefix="/auth")
 
@@ -75,14 +78,15 @@ async def login(
 ):
     """Authenticate user and return tokens"""
     try:
-        user_data, status_code = await user_service.get_user_by_email(
-            form_data.username, db
-        )
-
         # Get client info for logging
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
         
+        # Get user by email - returns tuple (user_data, status_code)
+        user_data, status_code = await user_service.get_user_by_email(
+            form_data.username, db
+        )
+
         if status_code == status.HTTP_404_NOT_FOUND:
             # Use the new method for failed attempts without user_id
             await login_history_service.create_failed_login_attempt(
@@ -97,14 +101,6 @@ async def login(
                 message="Login failed",
                 error="Invalid credentials",
                 status_code=status.HTTP_401_UNAUTHORIZED,
-            )
-
-        if status_code != status.HTTP_200_OK:
-            return StandardResponse(
-                success=False,
-                message="Login failed",
-                error="Internal server error",
-                status_code=status_code,
             )
 
         if status_code != status.HTTP_200_OK:
@@ -178,9 +174,11 @@ async def login(
         )
 
         if access_status != status.HTTP_200_OK or not access_token_result:
-            raise HTTPException(
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Failed to create access token",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create access token",
             )
 
         refresh_token_result, refresh_status = auth_service.create_refresh_token(
@@ -188,9 +186,11 @@ async def login(
         )
 
         if refresh_status != status.HTTP_200_OK or not refresh_token_result:
-            raise HTTPException(
+            return StandardResponse(
+                success=False,
+                message="Login failed",
+                error="Failed to create refresh token",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create refresh token",
             )
 
         # Remove password hash from response
@@ -224,19 +224,22 @@ async def login(
         )
 
 
-@router.post("/refresh", response_model=Token, summary="Refresh access token")
+@router.post("/refresh", response_model=StandardResponse, summary="Refresh access token")
 async def refresh_token(
     request: RefreshTokenRequest, db: AsyncSession = Depends(get_db)
 ):
     """Refresh access token using refresh token"""
     try:
         # Verify token returns a tuple (payload, status_code)
-        payload, status_code = auth_service.verify_token(request.refresh_token)
+        payload, status_code = await auth_service.verify_token(request.refresh_token, db)
 
         # Check if token verification was successful
         if status_code != status.HTTP_200_OK or not payload:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="Invalid refresh token",
+                status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
         # Now extract data from the payload
@@ -245,9 +248,30 @@ async def refresh_token(
         user_role = payload.get("role", "user")
 
         if not user_id or not email:
-            raise HTTPException(
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="Invalid refresh token payload",
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token payload",
+            )
+
+        # Verify user still exists and is active
+        user_data, user_status = await user_service.get_user_by_id(user_id)
+        
+        if user_status != status.HTTP_200_OK or not user_data:
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="User not found",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if not user_data.get("is_active", False):
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="User account is deactivated",
+                status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
         # Create new access token (returns tuple: (token, status_code))
@@ -256,9 +280,11 @@ async def refresh_token(
         )
 
         if access_status != status.HTTP_200_OK or not access_token_result:
-            raise HTTPException(
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="Failed to create access token",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create access token",
             )
 
         # Create new refresh token (returns tuple: (token, status_code))
@@ -267,26 +293,33 @@ async def refresh_token(
         )
 
         if refresh_status != status.HTTP_200_OK or not refresh_token_result:
-            raise HTTPException(
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="Failed to create refresh token",
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create refresh token",
             )
 
-        # Return just the token strings
-        return {
-            "access_token": access_token_result,
-            "token_type": "bearer",
-            "refresh_token": refresh_token_result,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Token refresh failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        # Return the response
+        return StandardResponse(
+            success=True,
+            message="Token refreshed successfully",
+            data={
+                "access_token": access_token_result,
+                "token_type": "bearer",
+                "refresh_token": refresh_token_result,
+            },
+            status_code=status.HTTP_200_OK,
         )
 
+    except Exception as e:
+        logger.error(f"Token refresh failed: {e}", exc_info=True)
+        return StandardResponse(
+            success=False,
+            message="Token refresh failed",
+            error="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 @router.post(
     "/logout",
@@ -301,23 +334,35 @@ async def refresh_token(
 )
 async def logout(
     response: Response,
-    current_user: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Logout user by invalidating the token and recording logout activity
     """
     try:
-        
-        current_user, status_code = current_user
-
-        if not current_user or status_code != status.HTTP_200_OK:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            return StandardResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status,
+            )
     
         # Invalidate the token (add to blacklist)
-        await auth_service.invalidate_token(
+        success, invalidate_status = await auth_service.invalidate_token(
             current_user.token, db
         )
+        
+        if not success:
+            return StandardResponse(
+                success=False,
+                message="Logout failed",
+                error="Failed to invalidate token",
+                status_code=invalidate_status,
+            )
                 
         # Record logout activity in login history
         await login_history_service.create_logout_record(
@@ -335,13 +380,13 @@ async def logout(
             status_code=status.HTTP_200_OK
         )
         
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Logout failed: {e}", exc_info=True)
-        raise HTTPException(
+        return StandardResponse(
+            success=False,
+            message="Logout failed",
+            error="Internal server error",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed due to server error"
         )
 
 @router.post(
@@ -482,9 +527,3 @@ async def verify_reset_token(
             message="Error verifying token",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-        
-        
-
-
-    
-    

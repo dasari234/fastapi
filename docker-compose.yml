@@ -16,6 +16,8 @@ services:
       - SSL_MODE=disable
       - ENVIRONMENT=development
       - DEBUG=True
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
     depends_on:
       - postgres
       - redis
@@ -64,6 +66,52 @@ services:
     networks:
       - fastapi-network
 
+  celery-worker:
+    build: .
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    volumes:
+      - ./app:/app/app
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/fastapi_db?sslmode=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      - postgres
+      - redis
+      - fastapi-app
+    restart: unless-stopped
+    networks:
+      - fastapi-network
+
+  celery-beat:
+    build: .
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    volumes:
+      - ./app:/app/app
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/fastapi_db?sslmode=disable
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_SSL=false
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    depends_on:
+      - postgres
+      - redis
+      - fastapi-app
+    restart: unless-stopped
+    networks:
+      - fastapi-network
+      
 volumes:
   postgres_data:
   redis_data:

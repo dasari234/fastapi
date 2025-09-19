@@ -7,12 +7,13 @@ from app.api.v1.routes.admin import router as admin_router
 from app.api.v1.routes.auth import router as auth_router
 from app.api.v1.routes.files import router as files_router
 from app.api.v1.routes.health import router as health_router
+from app.api.v1.routes.notifications import router as notifications_router
 from app.api.v1.routes.root import router as root_router
 from app.api.v1.routes.users import router as users_router
 from app.config import DEBUG, ENVIRONMENT, VERSION
-from app.core.redis_config import close_redis_pool, init_redis_pool
 from app.database import close_db, init_db
 from app.middleware.cors import setup_cors
+from app.redis.redisconfig import close_redis_pool, init_redis_pool
 from app.utils.exception_handling import global_exception_handler
 from app.utils.logging_config import setup_logging
 from app.utils.logging_request import log_requests_middleware
@@ -81,6 +82,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(files_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
 
 # --- Add middleware ---
 app.middleware("http")(log_requests_middleware)

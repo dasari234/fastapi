@@ -8,8 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import require_admin
 from app.database import get_db_context
 from app.schemas import StandardResponse
-from app.services.config_service import config_service
-from app.services.file_history_service import file_history_service
+from app.services import config_service, file_history_service
 
 router = APIRouter(tags=["Admin"], prefix="/admin")
 

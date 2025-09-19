@@ -6,13 +6,13 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_context
+from app.hooks.notification_hooks import notify_file_deleted, notify_file_uploaded
 from app.models.files import FileUploadRecord
 from app.models.user import User
 from app.services.redis_service import redis_service
 
 
 class FileService:
-    
     def _generate_cache_key(self, prefix: str, **kwargs) -> str:
         """Generate consistent cache key from parameters"""
         key_parts = [prefix]
@@ -20,7 +20,7 @@ class FileService:
             if v is not None:
                 key_parts.append(f"{k}:{v}")
         return ":".join(key_parts)
-    
+
     async def create_upload_record(
         self,
         original_filename: str,
@@ -44,8 +44,10 @@ class FileService:
             try:
                 # Check if file already exists using FileUploadRecord
                 user_id_int = int(user_id) if user_id and user_id.isdigit() else None
-                logger.info(f"Looking for existing file: filename='{original_filename}', user_id={user_id_int}")
-            
+                logger.info(
+                    f"Looking for existing file: filename='{original_filename}', user_id={user_id_int}"
+                )
+
                 result = await session.execute(
                     select(FileUploadRecord).where(
                         FileUploadRecord.original_filename == original_filename,
@@ -53,14 +55,17 @@ class FileService:
                     )
                 )
                 existing_files = result.scalars().all()
-                logger.info(f"Found {len(existing_files)} existing files with same name and user")
+                logger.info(
+                    f"Found {len(existing_files)} existing files with same name and user"
+                )
 
                 if existing_files:
                     current_version = max(existing_files, key=lambda x: x.version)
-                    logger.info(f"Current version: {current_version.version}, new version will be: {current_version.version + 1}")
+                    logger.info(
+                        f"Current version: {current_version.version}, new version will be: {current_version.version + 1}"
+                    )
                     # File exists, create new version using version service
-                    from app.services.file_version_service import \
-                        file_version_service
+                    from app.services.file_version_service import file_version_service
 
                     new_file_data = {
                         "original_filename": original_filename,
@@ -83,8 +88,10 @@ class FileService:
                     ) = await file_version_service.create_new_version(
                         session, new_file_data, user_id, version_comment
                     )
-                    
-                    logger.info(f"File version service returned: status={status_code}, version={new_version}")
+
+                    logger.info(
+                        f"File version service returned: status={status_code}, version={new_version}"
+                    )
                     if status_code != status.HTTP_201_CREATED:
                         return None, status_code
 
@@ -125,27 +132,56 @@ class FileService:
                         "version": file_upload.version,
                         "is_new_version": False,
                     }
-                    
+
                 # Invalidate relevant caches after successful creation
                 if db_record:
                     # Invalidate file cache
                     await redis_service.invalidate_file_cache(s3_key)
-                    
+
                     # Invalidate user's file list cache
-                    user_files_key = self._generate_cache_key("user_files", user_id=user_id)
+                    user_files_key = self._generate_cache_key(
+                        "user_files", user_id=user_id
+                    )
                     await redis_service.invalidate_file_list_cache(user_files_key)
-                    
+
                     # Invalidate folder cache if applicable
                     if folder_path:
-                        folder_key = self._generate_cache_key("folder_files", folder=folder_path)
+                        folder_key = self._generate_cache_key(
+                            "folder_files", folder=folder_path
+                        )
                         await redis_service.invalidate_file_list_cache(folder_key)
-                    
+
                     # Invalidate all files cache
                     await redis_service.invalidate_file_list_cache("all_files")
-                    
+
                     logger.info(f"Invalidated Redis caches for new file: {s3_key}")
-                
-                return db_record, status.HTTP_201_CREATED
+
+                if db_record and status_code == status.HTTP_201_CREATED:
+                    # Send notification
+                    file_data = {
+                        "id": db_record.get("id"),
+                        "original_filename": original_filename,
+                        "s3_key": s3_key,
+                        "version": db_record.get("version", 1),
+                        "is_new_version": db_record.get("is_new_version", False),
+                    }
+                    import asyncio
+
+                    asyncio.create_task(notify_file_uploaded(user_id_int, file_data))
+
+                    # In the delete_upload_record method, add this after successful deletion:
+                    if status_code == status.HTTP_201_CREATED:
+                        # Send notification
+                        file_data = {
+                            "s3_key": s3_key,
+                            "user_id": user_id,
+                            "folder_path": folder_path,
+                        }
+                        import asyncio
+
+                        asyncio.create_task(notify_file_deleted(user_id, file_data))
+
+                    return db_record, status.HTTP_201_CREATED
 
             except Exception as e:
                 await session.rollback()
@@ -157,13 +193,15 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _create_record(session)
-              
+
     async def get_file_versions(
         self, s3_key: str, user_id: Optional[str] = None, db: AsyncSession = None
     ) -> Tuple[Optional[List[Dict[str, Any]]], int]:
         """Get all versions of a file with access control"""
-        cache_key = self._generate_cache_key("file_versions", s3_key=s3_key, user_id=user_id)
-        
+        cache_key = self._generate_cache_key(
+            "file_versions", s3_key=s3_key, user_id=user_id
+        )
+
         # Check cache first
         cached_versions = await redis_service.get_cached_file_list(cache_key)
         if cached_versions:
@@ -244,7 +282,7 @@ class FileService:
 
                 # Cache the versions (10 minutes TTL)
                 await redis_service.cache_file_list(cache_key, versions_data, ttl=600)
-                
+
                 return versions_data, status.HTTP_200_OK
 
             except Exception as e:
@@ -366,9 +404,9 @@ class FileService:
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
-            offset=offset
+            offset=offset,
         )
-        
+
         # Check cache first
         cached_data = await redis_service.get_cached_file_list(cache_key)
         if cached_data:
@@ -386,16 +424,15 @@ class FileService:
                 except (ValueError, TypeError):
                     valid_limit = 100
                     valid_offset = 0
-                    
-                
+
                 # Ensure sort_order has a valid value
                 valid_sort_order = str(sort_order).lower() if sort_order else "desc"
                 if valid_sort_order not in ["asc", "desc"]:
                     valid_sort_order = "desc"
-                    
+
                 # Convert sort_by to string and handle None case
                 sort_by_str = str(sort_by) if sort_by is not None else None
-                
+
                 # Build query
                 query = select(FileUploadRecord).where(
                     FileUploadRecord.is_current_version == True
@@ -404,10 +441,9 @@ class FileService:
                 if user_id:
                     user_id_int = int(user_id)
                     query = query.where(FileUploadRecord.user_id == user_id_int)
-  
+
                 if folder:
                     query = query.where(FileUploadRecord.folder_path == folder)
-
 
                 # Add search functionality
                 if search:
@@ -419,14 +455,13 @@ class FileService:
                     )
                     query = query.where(search_filter)
 
-
                 # Apply sorting - safely handle sort_by parameter
                 sort_column = None
                 join_users = False
 
                 if sort_by_str:
                     sort_by_lower = str(sort_by_str).lower()
-                    
+
                     # Map sort_by parameter to actual column names
                     sort_mapping = {
                         "original_filename": FileUploadRecord.original_filename,
@@ -450,43 +485,49 @@ class FileService:
                         "lastname": User.last_name,
                         "user_email": User.email,
                         "email": User.email,
-                        "user": User.first_name, 
+                        "user": User.first_name,
                     }
-                    
+
                     if sort_by_lower in sort_mapping:
                         sort_column = sort_mapping[sort_by_lower]
-                        
+
                         # Check if we need to join with users table
-                        if sort_by_lower in ["user_firstname", "first_name", "firstname", 
-                                        "user_lastname", "last_name", "lastname", 
-                                        "user_email", "email", "user"]:
+                        if sort_by_lower in [
+                            "user_firstname",
+                            "first_name",
+                            "firstname",
+                            "user_lastname",
+                            "last_name",
+                            "lastname",
+                            "user_email",
+                            "email",
+                            "user",
+                        ]:
                             join_users = True
 
-                        
                         if valid_sort_order == "asc":
                             query = query.order_by(sort_column.asc())
-                       
+
                         else:
                             query = query.order_by(sort_column.desc())
-                           
+
                     else:
-                        logger.warning(f"Invalid sort_by parameter: '{sort_by_lower}'. Valid options: {list(sort_mapping.keys())}")
-                
+                        logger.warning(
+                            f"Invalid sort_by parameter: '{sort_by_lower}'. Valid options: {list(sort_mapping.keys())}"
+                        )
+
                 # Join with users table if needed for sorting
                 if join_users:
                     query = query.join(User, FileUploadRecord.user_id == User.id)
 
-                
                 # Default sorting if no sort specified
                 if not sort_column:
                     query = query.order_by(FileUploadRecord.created_at.desc())
-      
 
                 # Count total
                 count_query = query.with_only_columns(func.count()).order_by(None)
                 total_count_result = await session.execute(count_query)
                 total_count = total_count_result.scalar() or 0
-
 
                 # Get paginated results - use validated limit/offset
                 query = query.offset(valid_offset).limit(valid_limit)
@@ -510,20 +551,17 @@ class FileService:
                         logger.info(f"Fetching user details for user IDs: {user_ids}")
                         # Get users with their details
                         users_query = select(
-                            User.id,
-                            User.first_name,
-                            User.last_name,
-                            User.email
+                            User.id, User.first_name, User.last_name, User.email
                         ).where(User.id.in_(user_ids))
                         users_result = await session.execute(users_query)
                         users = users_result.all()
-                        
+
                         # Create dictionary with user details
                         users_dict = {
                             user_id: {
                                 "first_name": first_name,
                                 "last_name": last_name,
-                                "email": email
+                                "email": email,
                             }
                             for user_id, first_name, last_name, email in users
                         }
@@ -582,9 +620,9 @@ class FileService:
                     "sort_by": sort_by_str,
                     "sort_order": valid_sort_order,
                 }
-                
+
                 # Cache the result (5 minutes TTL for lists)
-                await redis_service.cache_file_list(cache_key, result_data, ttl=300)                
+                await redis_service.cache_file_list(cache_key, result_data, ttl=300)
                 return result_data, status.HTTP_200_OK
 
             except Exception as e:
@@ -596,7 +634,7 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _list_current_versions(session)
-        
+
     async def list_uploads(
         self,
         user_id: Optional[str] = None,
@@ -770,11 +808,10 @@ class FileService:
                     return None, status.HTTP_404_NOT_FOUND
 
                 record_dict = record.to_dict()
-                
+
                 # Cache the record after database fetch
-                await redis_service.cache_file(s3_key, record_dict)                
+                await redis_service.cache_file(s3_key, record_dict)
                 return record_dict, status.HTTP_200_OK
-                
 
             except Exception as e:
                 logger.error(
@@ -802,29 +839,33 @@ class FileService:
 
                 if not upload:
                     return False, status.HTTP_404_NOT_FOUND
-                
+
                 # Get user_id and folder for cache invalidation
                 user_id = upload.user_id
                 folder_path = upload.folder_path
                 await session.delete(upload)
                 await session.commit()
-                
+
                 # Invalidate caches after successful deletion
                 await redis_service.invalidate_file_cache(s3_key)
-                
+
                 if user_id:
-                    user_files_key = self._generate_cache_key("user_files", user_id=user_id)
+                    user_files_key = self._generate_cache_key(
+                        "user_files", user_id=user_id
+                    )
                     await redis_service.invalidate_file_list_cache(user_files_key)
-                
+
                 if folder_path:
-                    folder_key = self._generate_cache_key("folder_files", folder=folder_path)
+                    folder_key = self._generate_cache_key(
+                        "folder_files", folder=folder_path
+                    )
                     await redis_service.invalidate_file_list_cache(folder_key)
-                
+
                 # Invalidate all files cache
                 await redis_service.invalidate_file_list_cache("all_files")
-                
+
                 logger.info(f"Invalidated Redis caches after deleting file: {s3_key}")
-                
+
                 return True, status.HTTP_200_OK
 
             except Exception as e:
@@ -854,7 +895,7 @@ class FileService:
 
                 if not upload:
                     return None, status.HTTP_404_NOT_FOUND
-                
+
                 # Store old values for cache invalidation
                 old_user_id = upload.user_id
                 old_folder_path = upload.folder_path
@@ -891,30 +932,38 @@ class FileService:
 
                 # Invalidate caches after update
                 await redis_service.invalidate_file_cache(s3_key)
-                
+
                 # Invalidate user caches if user changed
                 if old_user_id != upload.user_id:
                     if old_user_id:
-                        old_user_key = self._generate_cache_key("user_files", user_id=old_user_id)
+                        old_user_key = self._generate_cache_key(
+                            "user_files", user_id=old_user_id
+                        )
                         await redis_service.invalidate_file_list_cache(old_user_key)
                     if upload.user_id:
-                        new_user_key = self._generate_cache_key("user_files", user_id=upload.user_id)
+                        new_user_key = self._generate_cache_key(
+                            "user_files", user_id=upload.user_id
+                        )
                         await redis_service.invalidate_file_list_cache(new_user_key)
-                
+
                 # Invalidate folder caches if folder changed
                 if old_folder_path != upload.folder_path:
                     if old_folder_path:
-                        old_folder_key = self._generate_cache_key("folder_files", folder=old_folder_path)
+                        old_folder_key = self._generate_cache_key(
+                            "folder_files", folder=old_folder_path
+                        )
                         await redis_service.invalidate_file_list_cache(old_folder_key)
                     if upload.folder_path:
-                        new_folder_key = self._generate_cache_key("folder_files", folder=upload.folder_path)
+                        new_folder_key = self._generate_cache_key(
+                            "folder_files", folder=upload.folder_path
+                        )
                         await redis_service.invalidate_file_list_cache(new_folder_key)
-                
+
                 # Invalidate all files cache
                 await redis_service.invalidate_file_list_cache("all_files")
-                
+
                 logger.info(f"Invalidated Redis caches after updating file: {s3_key}")
-                
+
                 return record_data, status.HTTP_200_OK
 
             except Exception as e:

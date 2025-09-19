@@ -10,8 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import PASSWORD_RESET_BASE_URL, PASSWORD_RESET_TOKEN_EXPIRE_MINUTES
 from app.database import get_db_context
 from app.models.user import PasswordResetToken, User
-from app.services.auth_service import auth_service
-from app.services.email_service import email_service
+from app.services import auth_service, email_service
 
 logger = logging.getLogger(__name__)
 

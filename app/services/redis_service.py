@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.config import CACHE_TTL_TOKEN, CACHE_TTL_USER
-from app.core.redis_config import redis_pool
+from app.redis.redisconfig import redis_pool
 
 
 class RedisService:
@@ -13,17 +13,13 @@ class RedisService:
         self.initialized = redis_pool is not None
         self.connection_healthy = False
         
-        """Check if Redis connection is healthy"""
+        # Check if Redis connection is healthy on initialization
         if not self.initialized:
             logger.warning("Redis not initialized - running without caching")
-            self.connection_healthy = False
             return
         
-        try:
-            # We'll check health on first use instead of blocking here
-            self.connection_healthy = True
-        except Exception:
-            self.connection_healthy = False
+        # We'll check health on first use instead of blocking here
+        self.connection_healthy = True
     
     async def _ensure_connection(self):
         """Ensure Redis connection is healthy"""
@@ -84,7 +80,7 @@ class RedisService:
                 return parsed_value
             except json.JSONDecodeError:
                 # Return raw value if it's not JSON
-                logger.debug(f"Redis get returned non-JSON value for key: {key}")
+                logger.debug(f"Redis get returned non-JJSON value for key: {key}")
                 return value
         except Exception as e:
             logger.error(f"Redis get error for key {key}: {e}")
@@ -152,7 +148,6 @@ class RedisService:
         self.connection_healthy = False
         return False
     
-
     # User-specific cache methods
     async def cache_user(self, user_id: int, user_data: dict) -> bool:
         """Cache user data"""
@@ -199,136 +194,80 @@ class RedisService:
     # File cache methods
     async def cache_file(self, s3_key: str, file_data: Dict, ttl: int = 3600) -> bool:
         """Cache file data with TTL"""
-        try:
-            if not self.is_available():
-                return False
-                
-            await self.redis_client.setex(
-                f"file:{s3_key}",
-                ttl,
-                json.dumps(file_data)
-            )
-            logger.debug(f"Cached file data for key: {s3_key}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cache file data: {e}")
-            return False
+        return await self.set(f"file:{s3_key}", file_data, ttl)
 
     async def get_cached_file(self, s3_key: str) -> Optional[Dict]:
         """Get cached file data"""
-        try:
-            if not self.is_available():
-                return None
-                
-            cached_data = await self.redis_client.get(f"file:{s3_key}")
-            if cached_data:
-                logger.debug(f"Cache hit for file: {s3_key}")
-                return json.loads(cached_data)
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get cached file: {e}")
-            return None
+        return await self.get(f"file:{s3_key}")
 
     async def invalidate_file_cache(self, s3_key: str) -> bool:
         """Invalidate cached file data"""
-        try:
-            if not self.is_available():
-                return False
-                
-            await self.redis_client.delete(f"file:{s3_key}")
-            logger.debug(f"Invalidated cache for file: {s3_key}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to invalidate file cache: {e}")
-            return False
+        return await self.delete(f"file:{s3_key}")
 
     async def cache_file_list(self, cache_key: str, files_data: List[Dict], ttl: int = 300) -> bool:
         """Cache file list data"""
-        try:
-            if not self.is_available():
-                return False
-                
-            await self.redis_client.setex(
-                cache_key,
-                ttl,
-                json.dumps(files_data)
-            )
-            logger.debug(f"Cached file list for key: {cache_key}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cache file list: {e}")
-            return False
+        return await self.set(cache_key, files_data, ttl)
 
     async def get_cached_file_list(self, cache_key: str) -> Optional[List[Dict]]:
         """Get cached file list"""
-        try:
-            if not self.is_available():
-                return None
-                
-            cached_data = await self.redis_client.get(cache_key)
-            if cached_data:
-                logger.debug(f"Cache hit for file list: {cache_key}")
-                return json.loads(cached_data)
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get cached file list: {e}")
-            return None
-        
-        
+        return await self.get(cache_key)
+           
     async def invalidate_file_list_cache(self, cache_key: str) -> bool:
         """Invalidate file list cache"""
-        try:
-            if not self.is_available():
-                return False
-                
-            # Use pattern matching to find and delete all related keys
-            keys = await self.redis_client.keys(f"{cache_key}*")
-            if keys:
-                await self.redis_client.delete(*keys)
-                logger.debug(f"Invalidated file list cache for pattern: {cache_key}*")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to invalidate file list cache: {e}")
-            return False
+        # Use pattern matching to find and delete all related keys
+        return await self.delete_pattern(f"{cache_key}*") > 0
 
     async def cache_file_metadata(self, s3_key: str, metadata: Dict, ttl: int = 3600) -> bool:
         """Cache file metadata separately"""
-        try:
-            if not self.is_available():
-                return False
-                
-            await self.redis_client.setex(
-                f"file_meta:{s3_key}",
-                ttl,
-                json.dumps(metadata)
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to cache file metadata: {e}")
-            return False
+        return await self.set(f"file_meta:{s3_key}", metadata, ttl)
 
     async def get_cached_file_metadata(self, s3_key: str) -> Optional[Dict]:
         """Get cached file metadata"""
+        return await self.get(f"file_meta:{s3_key}")
+            
+    async def publish_notification(self, channel: str, message: dict) -> bool:
+        """Publish a notification to a Redis channel"""
         try:
-            if not self.is_available():
-                return None
-                
-            cached_meta = await self.redis_client.get(f"file_meta:{s3_key}")
-            if cached_meta:
-                return json.loads(cached_meta)
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get cached file metadata: {e}")
-            return None
-        
-        
-    
+            import json
 
+            # from app.redis_client import redis_client
+            
+            await self.redis_client.publish(channel, json.dumps(message))
+            logger.debug(f"Published notification to channel {channel}")
+            return True
+        except Exception as e:
+            logger.error(f"Error publishing notification: {e}")
+            return False
+    
+    async def subscribe_to_notifications(self, user_id: int):
+        """Subscribe to notifications for a user"""
+        if not await self._ensure_connection():
+            logger.debug(f"Redis not available - skipping subscription for user: {user_id}")
+            # Return immediately without yielding anything
+            return
+            
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe(f"user:{user_id}:notifications")
+            
+            try:
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        try:
+                            yield json.loads(message['data'])
+                        except json.JSONDecodeError:
+                            logger.error(f"Failed to decode message: {message['data']}")
+                            continue
+            finally:
+                # Clean up the pubsub connection
+                await pubsub.unsubscribe(f"user:{user_id}:notifications")
+                await pubsub.close()
+                    
+        except Exception as e:
+            logger.error(f"Error subscribing to notifications: {e}")
+            self.connection_healthy = False
+            # Return without yielding anything
+            return
+    
 # Global instance
 redis_service = RedisService()
-
-
-
-
-
-
