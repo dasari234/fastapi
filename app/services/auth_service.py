@@ -18,7 +18,7 @@ from app.config import (
 from app.hooks.notification_hooks import notify_login
 from app.models.user import TokenBlacklist
 from app.schemas.auth import TokenData
-from app.services import redis_service
+from app.utils.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 
 # --- Password hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -92,145 +92,167 @@ class AuthService:
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
     async def verify_token(self, token: str, db: AsyncSession = None) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Verify JWT token with status codes and caching"""
+        """Verify JWT token with Redis caching and database fallback"""
         try:
-            # Check cache first for blacklist status
-            from app.services.redis_service import redis_service
+            # Basic token validation
+            if not token or not isinstance(token, str):
+                return None, status.HTTP_401_UNAUTHORIZED
             
-            cache_key = f"token_blacklist:{token}"
-            cached_blacklist = await redis_service.get(cache_key)
+            # Check token structure (should have 3 parts)
+            if len(token.split('.')) != 3:
+                return None, status.HTTP_401_UNAUTHORIZED
             
-            if cached_blacklist is not None:
-                # Token is either blacklisted or verified as not blacklisted
-                if cached_blacklist.get("blacklisted", False):
-                    logger.warning(f"Attempt to use blacklisted token (from cache): {token}")
-                    return None, status.HTTP_401_UNAUTHORIZED
-                # Token is not blacklisted, proceed with JWT verification
+            # Check Redis cache first if available
+            if is_redis_available():
+                cache_key = f"token_blacklist:{token}"
+                cached_blacklist = await safe_redis_get(cache_key)
+                
+                if cached_blacklist is not None:
+                    if cached_blacklist.get("blacklisted", False):
+                        logger.warning(f"Attempt to use blacklisted token (from cache): {token}")
+                        return None, status.HTTP_401_UNAUTHORIZED
+                    # Token is not blacklisted in cache, proceed with JWT verification
+                else:
+                    # Cache miss - need to check database
+                    if db is None:
+                        from app.database import get_db_context
+                        async with get_db_context() as session:
+                            return await self._verify_token_with_session(token, session)
+                    else:
+                        return await self._verify_token_with_session(token, db)
             else:
-                # Check database if not in cache - ensure we have a database session
+                # Redis not available, check database directly
                 if db is None:
-                    # Get a new database session if none provided
                     from app.database import get_db_context
                     async with get_db_context() as session:
                         return await self._verify_token_with_session(token, session)
                 else:
                     return await self._verify_token_with_session(token, db)
-        
-            # Basic token validation
-            if not token or not isinstance(token, str):
+            
+            # If we reach here, token is not blacklisted (from cache), verify JWT
+            try:
+                # Try to decode without verification first to check expiration
+                try:
+                    payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
+                except jwt.PyJWTError:
+                    # If we can't even decode without verification, it's invalid
+                    return None, status.HTTP_401_UNAUTHORIZED
+                
+                # Now verify with expiration check
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                return payload, status.HTTP_200_OK
+                
+            except ExpiredSignatureError:
+                logger.warning("Token has expired")
                 return None, status.HTTP_401_UNAUTHORIZED
-            
-            # Check token structure (should have 3 parts)
-            if len(token.split('.')) != 3:
+            except InvalidTokenError as e:
+                logger.warning(f"Invalid token: {e}")
                 return None, status.HTTP_401_UNAUTHORIZED
-            
-            # Verify JWT
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            return payload, status.HTTP_200_OK
-            
-        except ExpiredSignatureError:
-            logger.warning("Token has expired")
-            return None, status.HTTP_401_UNAUTHORIZED
-        except InvalidTokenError as e:
-            logger.warning(f"Invalid token: {e}")
-            return None, status.HTTP_401_UNAUTHORIZED
-        except jwt.PyJWTError as e:
-            logger.error(f"JWT decoding error: {e}")
-            return None, status.HTTP_401_UNAUTHORIZED
+            except jwt.PyJWTError as e:
+                logger.error(f"JWT decoding error: {e}")
+                return None, status.HTTP_401_UNAUTHORIZED
+                
         except Exception as e:
             logger.error(f"Token verification failed: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-        
-        
-    async def _verify_token_with_session(self, token: str, session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Internal method to verify token with a database session"""
+
+    async def _verify_token_with_session(
+        self, token: str, session: AsyncSession
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """Internal method to verify token with database session"""
         try:
             from sqlalchemy import select
 
-            from app.services.redis_service import redis_service  # Local import
-            
+            # Check database for blacklist status
             result = await session.execute(
                 select(TokenBlacklist).where(TokenBlacklist.token == token)
             )
             blacklisted = result.scalar_one_or_none()
-            
+
             cache_key = f"token_blacklist:{token}"
-            
+
+            # Update Redis cache if available
+            if is_redis_available():
+                if blacklisted:
+                    # Cache blacklisted status
+                    await safe_redis_set(cache_key, {"blacklisted": True}, ttl=300)
+                else:
+                    # Cache non-blacklisted status
+                    await safe_redis_set(cache_key, {"blacklisted": False}, ttl=60)
+
             if blacklisted:
-                # Cache blacklisted status for 5 minutes
-                await redis_service.set(cache_key, {"blacklisted": True}, ttl=300)
                 logger.warning(f"Attempt to use blacklisted token: {token}")
                 return None, status.HTTP_401_UNAUTHORIZED
-            else:
-                # Cache non-blacklisted status for 1 minute
-                await redis_service.set(cache_key, {"blacklisted": False}, ttl=60)
-                
-            # Basic token validation
-            if not token or not isinstance(token, str):
+
+            # Verify JWT token
+            try:
+                payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+                return payload, status.HTTP_200_OK
+            except ExpiredSignatureError:
+                logger.warning("Token has expired")
                 return None, status.HTTP_401_UNAUTHORIZED
-            
-            # Check token structure (should have 3 parts)
-            if len(token.split('.')) != 3:
+            except InvalidTokenError as e:
+                logger.warning(f"Invalid token: {e}")
                 return None, status.HTTP_401_UNAUTHORIZED
-            
-            # Verify JWT
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            return payload, status.HTTP_200_OK
-            
+            except jwt.PyJWTError as e:
+                logger.error(f"JWT decoding error: {e}")
+                return None, status.HTTP_401_UNAUTHORIZED
+
         except Exception as e:
             logger.error(f"Error in token verification with session: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
 
-    async def get_current_user(self, token: str = Depends(oauth2_scheme)) -> Tuple[Optional[TokenData], int]:
+    async def get_current_user(
+        self, token: str = Depends(oauth2_scheme)
+    ) -> Tuple[Optional[TokenData], int]:
         """Get current user from token - returns (user_data, status_code)"""
         try:
-            # Import redis_service locally to avoid circular imports
-            from app.services.redis_service import redis_service
+            # Import user_service locally to avoid circular imports
             from app.services.user_service import user_service
 
-            # Check cache first
-            cached_user = await redis_service.get_cached_token(token)
-            
-            if cached_user:
-                logger.debug("User data retrieved from cache")
-                return TokenData(**cached_user), status.HTTP_200_OK
-            
+            # Check cache first if Redis is available
+            if is_redis_available():
+                cached_user = await safe_redis_get(f"token:{token}")
+                if cached_user:
+                    logger.debug("User data retrieved from Redis cache")
+                    return TokenData(**cached_user), status.HTTP_200_OK
+
             # Verify token with database session
             from app.database import get_db_context
-            
+
             async with get_db_context() as db:
                 payload, status_code = await self.verify_token(token, db)
-                
+
                 if status_code != status.HTTP_200_OK or not payload:
                     return None, status.HTTP_401_UNAUTHORIZED
-                
+
                 # Extract user data
                 user_id = payload.get("user_id")
                 email = payload.get("email")
                 role = payload.get("role", "user")
-                
+
                 if not user_id or not email:
                     return None, status.HTTP_401_UNAUTHORIZED
-                
+
                 # Get user data from database using the same session
                 user_data, user_status = await user_service.get_user_by_id(user_id, db)
-                
+
                 if user_status != status.HTTP_200_OK or not user_data:
                     return None, status.HTTP_401_UNAUTHORIZED
-                
+
                 # Create TokenData object
                 user_data_obj = TokenData(
-                    user_id=user_id,
-                    email=email,
-                    role=role,
-                    token=token
+                    user_id=user_id, email=email, role=role, token=token
                 )
-                
-                # Cache the user data
-                await redis_service.cache_token(token, user_data_obj.model_dump())
-                
+
+                # Cache the user data if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(
+                        f"token:{token}", user_data_obj.model_dump(), ttl=300
+                    )
+
                 return user_data_obj, status.HTTP_200_OK
-            
+
         except Exception as e:
             logger.error(f"Error getting current user: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -245,13 +267,14 @@ class AuthService:
 
         async def _invalidate_token(session: AsyncSession) -> Tuple[bool, int]:
             try:
-                # First check cache to avoid duplicate database queries
-                cache_key = f"token_blacklist:{token}"
-                cached_check = await redis_service.get(cache_key)
-                
-                if cached_check and cached_check.get("blacklisted", False):
-                    logger.info(f"Token already blacklisted (from cache): {token}")
-                    return True, status.HTTP_200_OK
+                # First check cache if Redis is available
+                if is_redis_available():
+                    cache_key = f"token_blacklist:{token}"
+                    cached_check = await safe_redis_get(cache_key)
+
+                    if cached_check and cached_check.get("blacklisted", False):
+                        logger.info(f"Token already blacklisted (from cache): {token}")
+                        return True, status.HTTP_200_OK
 
                 # Check if token is already blacklisted in database
                 from sqlalchemy import select
@@ -263,8 +286,9 @@ class AuthService:
 
                 if existing_token:
                     logger.info(f"Token already blacklisted: {token}")
-                    # Cache this result for 1 hour to avoid future database checks
-                    await redis_service.set(cache_key, {"blacklisted": True}, ttl=3600)
+                    # Cache this result if Redis is available
+                    if is_redis_available():
+                        await safe_redis_set(cache_key, {"blacklisted": True}, ttl=3600)
                     return True, status.HTTP_200_OK
 
                 # Add token to blacklist
@@ -275,8 +299,9 @@ class AuthService:
                 session.add(blacklisted_token)
                 await session.commit()
 
-                # Cache the blacklist status for 1 hour
-                await redis_service.set(cache_key, {"blacklisted": True}, ttl=3600)
+                # Cache the blacklist status if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(cache_key, {"blacklisted": True}, ttl=3600)
 
                 logger.info("Token successfully blacklisted for user")
                 return True, status.HTTP_200_OK
@@ -304,6 +329,7 @@ class AuthService:
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Authenticate user with status codes and login history"""
         try:
+            # Import services locally to avoid circular imports
             from app.services.login_history_service import create_login_record
             from app.services.user_service import user_service
 
@@ -387,6 +413,28 @@ class AuthService:
 
         return _get_current_user
 
+    @staticmethod
+    def is_token_expired(token: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """Check if token is expired without full verification"""
+        try:
+            # Decode without verification to get payload
+            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
+            
+            # Check expiration manually
+            exp = payload.get('exp')
+            if exp is None:
+                return True, payload  # No expiration date, consider expired
+            
+            current_time = datetime.now(timezone.utc).timestamp()
+            if current_time > exp:
+                return True, payload  # Token is expired
+            
+            return False, payload  # Token is not expired
+            
+        except jwt.PyJWTError as e:
+            logger.error(f"Error checking token expiration: {e}")
+            return True, None
+        
 
 # --- Create global instance ---
 auth_service = AuthService()

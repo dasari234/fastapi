@@ -101,3 +101,38 @@ async def notify_profile_updated(user_id: int, user_data: dict, db=None):
     except Exception as e:
         logger.error(f"Error sending profile update notification: {e}")
         
+async def notify_password_changed(user_id: int, user_data: dict, db=None):
+    """Send notification about password change"""
+    try:
+        title = "Password Changed"
+        message = "Your password has been successfully updated."
+        await notification_service.create_notification(
+            user_id=user_id,
+            title=title,
+            message=message,
+            notification_type="info",
+            action_type="password_updated",
+            action_data=user_data,
+            db=db
+        )
+        logger.info(f"Password changed for user {user_id} ({user_data['email']})")
+    except Exception as e:
+        logger.error(f"Failed to send password change notification: {e}")
+
+async def notify_password_changed_admin(user_id: int, user_data: dict, db=None):
+    """Send notification about admin-initiated password change"""
+    try:
+        title = "Password Changed by Admin"
+        message = "Your password has been successfully updated."
+        await notification_service.create_notification(
+            user_id=user_id,
+            title=title,
+            message=message,
+            notification_type="info",
+            action_type="password_updated_by_admin",
+            action_data=user_data,
+            db=db
+        )
+        logger.info(f"Password changed by admin for user {user_id} ({user_data['email']})")
+    except Exception as e:
+        logger.error(f"Failed to send admin password change notification: {e}")

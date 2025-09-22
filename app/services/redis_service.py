@@ -21,6 +21,11 @@ class RedisService:
         # We'll check health on first use instead of blocking here
         self.connection_healthy = True
     
+    @property
+    def is_available(self) -> bool:
+        """Check if Redis is available (property)"""
+        return self.initialized and self.connection_healthy
+    
     async def _ensure_connection(self):
         """Ensure Redis connection is healthy"""
         if not self.initialized:
@@ -39,10 +44,6 @@ class RedisService:
             self.connection_healthy = False
             return False
         
-    def is_available(self) -> bool:
-        """Check if Redis is available"""
-        return self.initialized and self.connection_healthy
-
     async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> bool:
         """Set value with optional TTL"""
         if not await self._ensure_connection():
@@ -80,13 +81,13 @@ class RedisService:
                 return parsed_value
             except json.JSONDecodeError:
                 # Return raw value if it's not JSON
-                logger.debug(f"Redis get returned non-JJSON value for key: {key}")
+                logger.debug(f"Redis get returned non-JSON value for key: {key}")
                 return value
         except Exception as e:
             logger.error(f"Redis get error for key {key}: {e}")
             self.connection_healthy = False
             return None
-
+    
     async def delete(self, key: str) -> bool:
         """Delete key"""
         if not await self._ensure_connection():
@@ -229,10 +230,7 @@ class RedisService:
         """Publish a notification to a Redis channel"""
         try:
             import json
-
-            # from app.redis_client import redis_client
-            
-            await self.redis_client.publish(channel, json.dumps(message))
+            await self.redis.publish(channel, json.dumps(message))
             logger.debug(f"Published notification to channel {channel}")
             return True
         except Exception as e:

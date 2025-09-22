@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
@@ -5,6 +6,7 @@ from loguru import logger
 from sqlalchemy import String, asc, delete, desc, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import CACHE_TTL_USER
 from app.database import get_db_context
 from app.hooks.notification_hooks import notify_user_created
 from app.models.file_history import FileHistory
@@ -13,6 +15,7 @@ from app.models.login_history import LoginHistory
 from app.models.user import PasswordResetToken, TokenBlacklist, User
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services import auth_service, redis_service
+from app.utils.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 
 
 class UserService:
@@ -68,12 +71,13 @@ class UserService:
                     else None,
                 }
 
-                # Cache the new user
-                await redis_service.cache_user(user.id, user_response)
-                await redis_service.cache_user_by_email(user.email, user_response)
+                # Cache the new user if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(f"user:{user.id}", user_response, CACHE_TTL_USER)
+                    await safe_redis_set(f"user_email:{user.email}", user_response, CACHE_TTL_USER)
                 
                 # Send notification
-                if user_response and status == status.HTTP_201_CREATED:                    
+                if user_response:                    
                     import asyncio
                     asyncio.create_task(notify_user_created(user.id, user_response))
 
@@ -90,22 +94,20 @@ class UserService:
             async with get_db_context() as session:
                 return await _create_user(session)
             
-
     async def get_user_by_id(
         self, user_id: int, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Get user by ID with Redis caching and standardized response"""
-        # Check cache first
-        cached_user = await redis_service.get_cached_user(user_id)
-        if cached_user:
-            logger.debug(f"User {user_id} retrieved from cache")
-            return cached_user, status.HTTP_200_OK
+        """Get user by ID with Redis caching and database fallback"""
+        # Check Redis cache first if available
+        if is_redis_available():
+            cached_user = await safe_redis_get(f"user:{user_id}")
+            if cached_user:
+                logger.debug(f"User {user_id} retrieved from Redis cache")
+                return cached_user, status.HTTP_200_OK
 
-        async def _get_user(
-            session: AsyncSession,
-        ) -> Tuple[Optional[Dict[str, Any]], int]:
+        # If Redis not available or cache miss, get from database
+        async def _get_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
-                # Use a more efficient query with only needed columns
                 result = await session.execute(
                     select(
                         User.id,
@@ -119,7 +121,7 @@ class UserService:
                         User.updated_at
                     ).where(User.id == user_id)
                 )
-                user = result.first()  # Use first() instead of scalar_one_or_none() for specific columns
+                user = result.first()
                 
                 if not user:
                     return None, status.HTTP_404_NOT_FOUND
@@ -136,9 +138,9 @@ class UserService:
                     "updated_at": user.updated_at.isoformat() if user.updated_at else None,
                 }
 
-                # Cache the user data
-                await redis_service.cache_user(user_id, user_data)
-                await redis_service.cache_user_by_email(user.email, user_data)
+                # Cache the user data if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(f"user:{user_id}", user_data, CACHE_TTL_USER)
 
                 return user_data, status.HTTP_200_OK
 
@@ -155,16 +157,16 @@ class UserService:
     async def get_user_by_email(
         self, email: str, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Get user by email with standardized response"""
-        # Check cache first
-        cached_user = await redis_service.get_cached_user_by_email(email)
-        if cached_user:
-            logger.debug(f"User {email} retrieved from cache")
-            return cached_user, status.HTTP_200_OK
+        """Get user by email with Redis caching and database fallback"""
+        # Check Redis cache first if available
+        if is_redis_available():
+            cached_user = await safe_redis_get(f"user_email:{email}")
+            if cached_user:
+                logger.debug(f"User {email} retrieved from Redis cache")
+                return cached_user, status.HTTP_200_OK
 
-        async def _get_user(
-            session: AsyncSession,
-        ) -> Tuple[Optional[Dict[str, Any]], int]:
+        # If Redis not available or cache miss, get from database
+        async def _get_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
                 result = await session.execute(select(User).where(User.email == email))
                 user = result.scalar_one_or_none()
@@ -180,16 +182,14 @@ class UserService:
                     "password_hash": user.password_hash,
                     "role": user.role,
                     "is_active": user.is_active,
-                    "created_at": user.created_at.isoformat()
-                    if user.created_at
-                    else None,
-                    "updated_at": user.updated_at.isoformat()
-                    if user.updated_at
-                    else None,
+                    "created_at": user.created_at.isoformat() if user.created_at else None,
+                    "updated_at": user.updated_at.isoformat() if user.updated_at else None,
                 }
-                # Cache the user data
-                await redis_service.cache_user(user.id, user_data)
-                await redis_service.cache_user_by_email(email, user_data)
+                
+                # Cache the user data if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(f"user:{user.id}", user_data, CACHE_TTL_USER)
+                    await safe_redis_set(f"user_email:{user.email}", user_data, CACHE_TTL_USER)
 
                 return user_data, status.HTTP_200_OK
 
@@ -207,10 +207,7 @@ class UserService:
         self, user_id: int, user_data: UserUpdate, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Update user information and clear cache"""
-
-        async def _update_user(
-            session: AsyncSession,
-        ) -> Tuple[Optional[Dict[str, Any]], int]:
+        async def _update_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
                 # Check if user exists first
                 result = await session.execute(select(User).where(User.id == user_id))
@@ -251,17 +248,17 @@ class UserService:
                 }
 
                 # Invalidate cache for both old and new email if email changed
-                await redis_service.invalidate_user(user_id)
-                await redis_service.invalidate_user_by_email(old_email)
+                if is_redis_available():
+                    await redis_service.invalidate_user(user_id)
+                    await redis_service.invalidate_user_by_email(old_email)
 
-                if "email" in update_data and update_data["email"] != old_email:
-                    await redis_service.invalidate_user_by_email(update_data["email"])
+                    if "email" in update_data and update_data["email"] != old_email:
+                        await redis_service.invalidate_user_by_email(update_data["email"])
 
-                # Cache the updated user
-                await redis_service.cache_user(user_id, user_response)
-                await redis_service.cache_user_by_email(
-                    updated_user.email, user_response
-                )
+                # Cache the updated user if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(f"user:{user_id}", user_response, CACHE_TTL_USER)
+                    await safe_redis_set(f"user_email:{updated_user.email}", user_response, CACHE_TTL_USER)
 
                 return user_response, status.HTTP_200_OK
 
@@ -275,7 +272,7 @@ class UserService:
         else:
             async with get_db_context() as session:
                 return await _update_user(session)
-
+    
     async def delete_user(
         self, user_id: int, db: AsyncSession = None
     ) -> Tuple[bool, int]:
@@ -323,13 +320,13 @@ class UserService:
                 user_email = user.email
 
                 # Delete user
-                # await session.execute(delete(User).where(User.id == user_id))
                 await session.delete(user)
                 await session.commit()
 
-                # Invalidate cache
-                await redis_service.invalidate_user(user_id)
-                await redis_service.invalidate_user_by_email(user_email)
+                # Invalidate cache if Redis is available
+                if is_redis_available():
+                    await redis_service.invalidate_user(user_id)
+                    await redis_service.invalidate_user_by_email(user_email)
                 
                 logger.info(f"Successfully deleted user {user_id}")
                 
@@ -421,9 +418,10 @@ class UserService:
                     }
                     users_data.append(user_data)
 
-                    # Cache individual users for faster single lookups
-                    await redis_service.cache_user(user.id, user_data)
-                    await redis_service.cache_user_by_email(user.email, user_data)
+                    # Cache individual users for faster single lookups if Redis is available
+                    if is_redis_available():
+                        await safe_redis_set(f"user:{user.id}", user_data, CACHE_TTL_USER)
+                        await safe_redis_set(f"user_email:{user.email}", user_data, CACHE_TTL_USER)
 
                 response_data = {
                     "users": users_data,
@@ -450,6 +448,74 @@ class UserService:
         else:
             async with get_db_context() as session:
                 return await _list_users(session)
+            
+    async def change_password(
+        self, 
+        user_id: int, 
+        current_password: str, 
+        new_password: str,
+        db: AsyncSession = None
+    ) -> Tuple[bool, int]:
+        """Change user password with verification"""
+        
+        async def _change_password(session: AsyncSession) -> Tuple[bool, int]:
+            try:
+                # Get user with password hash
+                result = await session.execute(
+                    select(User.id, User.password_hash).where(User.id == user_id)
+                )
+                user = result.first()
+                
+                if not user:
+                    return False, status.HTTP_404_NOT_FOUND
+                
+                # Verify current password
+                is_valid, error = auth_service.verify_password(current_password, user.password_hash)
+                
+                if not is_valid:
+                    logger.warning(f"Invalid current password for user {user_id}")
+                    return False, status.HTTP_401_UNAUTHORIZED
+                
+                if error:
+                    logger.error(f"Password verification error for user {user_id}: {error}")
+                    return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+                
+                # Hash new password
+                new_hashed_password = auth_service.get_password_hash(new_password)
+                
+                # Update password
+                await session.execute(
+                    update(User)
+                    .where(User.id == user_id)
+                    .values(password_hash=new_hashed_password, updated_at=datetime.isoformat())
+                )
+                await session.commit()
+                
+                # Invalidate user cache if Redis is available
+                if is_redis_available():
+                    await redis_service.invalidate_user(user_id)
+                
+                # Get user email for email cache invalidation
+                user_email_result = await session.execute(
+                    select(User.email).where(User.id == user_id)
+                )
+                user_email = user_email_result.scalar_one_or_none()
+                if user_email and is_redis_available():
+                    await redis_service.invalidate_user_by_email(user_email)
+                
+                logger.info(f"Password changed successfully for user {user_id}")
+                return True, status.HTTP_200_OK
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error changing password for user {user_id}: {e}")
+                return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        if db:
+            return await _change_password(db)
+        else:
+            async with get_db_context() as session:
+                return await _change_password(session)
 
 
 # Create global instance

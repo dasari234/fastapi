@@ -1,13 +1,14 @@
 import time
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
 
 from app.config import ENVIRONMENT
 from app.database import get_db
+from app.schemas.base import StandardResponse
 from app.schemas.health import DBHealthResponse, HealthResponse, SimpleHealthResponse
 from app.services.redis_service import redis_service
 
@@ -216,33 +217,30 @@ async def detailed_health_check(db: AsyncSession = Depends(get_db)):
     }
     
     
-@router.get("/redis", summary="Check Redis health")
-async def check_redis_health():
-    """Check Redis connection health"""
-    try:
-        if not redis_service.initialized or not redis_service.redis:
-            return {
-                "status": "unhealthy",
-                "message": "Redis not initialized",
-                "redis_initialized": False
-            }
-        
-        # Test Redis connection
-        is_connected = await redis_service.redis.ping()
-        
-        return {
-            "status": "healthy" if is_connected else "unhealthy",
-            "message": "Redis connection successful" if is_connected else "Redis connection failed",
-            "redis_initialized": True,
-            "redis_connected": is_connected
-        }
-        
-    except Exception as e:
-        logger.error(f"Redis health check failed: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Redis health check failed: {str(e)}"
-        )
+@router.get(
+    "/redis",
+    response_model=StandardResponse,
+    summary="Check Redis status"
+)
+async def check_redis_status():
+    """Check if Redis is available"""
+    is_available = redis_service.is_available()
+    is_healthy = False
+    
+    # Do a deeper health check if Redis is supposedly available
+    if is_available:
+        is_healthy = await redis_service.check_health()
+    
+    return StandardResponse(
+        success=is_healthy,
+        message="Redis is healthy" if is_healthy else "Redis is not available",
+        data={
+            "redis_available": is_available,
+            "redis_healthy": is_healthy,
+            "redis_initialized": redis_service.initialized
+        },
+        status_code=200 if is_healthy else 503
+    )
         
 
         

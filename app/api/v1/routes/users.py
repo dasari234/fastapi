@@ -1,20 +1,30 @@
+from datetime import datetime
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.params import Body
 from loguru import logger
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user, require_role
 from app.database import get_db
+from app.models.user import User
 from app.schemas.auth import TokenData
 from app.schemas.base import StandardResponse
 from app.schemas.users import (
     LoginStatsResponse,
+    PasswordChangeRequest,
     UserLoginHistoryResponse,
     UserRole,
     UserUpdate,
 )
-from app.services import auth_service, login_history_service, user_service
+from app.services import (
+    auth_service,
+    login_history_service,
+    redis_service,
+    user_service,
+)
 
 router = APIRouter(tags=["Users"], prefix="/users")
 
@@ -698,4 +708,175 @@ async def get_user_login_history_admin(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve login history",
+        )
+        
+        
+@router.post(
+    "/change-password",
+    response_model=StandardResponse,
+    summary="Change user password",
+    responses={
+        200: {"description": "Password changed successfully"},
+        400: {"description": "Invalid password format or passwords don't match"},
+        401: {"description": "Invalid current password"},
+        404: {"description": "User not found"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def change_password(
+    password_data: PasswordChangeRequest,
+    current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change current user's password"""
+    try:
+        # Extract TokenData from tuple
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            return StandardResponse(
+                success=False,
+                message="Authentication failed",
+                error="Invalid or expired token",
+                status_code=auth_status,
+            )
+
+        # Change password
+        success, status_code = await user_service.change_password(
+            current_user.user_id,
+            password_data.current_password,
+            password_data.new_password,
+            db
+        )
+
+        if status_code == status.HTTP_401_UNAUTHORIZED:
+            return StandardResponse(
+                success=False,
+                message="Password change failed",
+                error="Current password is incorrect",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        if status_code == status.HTTP_404_NOT_FOUND:
+            return StandardResponse(
+                success=False,
+                message="Password change failed",
+                error="User not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        if status_code != status.HTTP_200_OK:
+            return StandardResponse(
+                success=False,
+                message="Password change failed",
+                error="Internal server error",
+                status_code=status_code,
+            )
+
+        # Send password change notification
+        try:
+            import asyncio
+
+            from app.hooks.notification_hooks import notify_password_changed
+            
+            user_data, _ = await user_service.get_user_by_id(current_user.user_id, db)
+            if user_data:
+                asyncio.create_task(notify_password_changed(current_user.user_id, user_data))
+        except Exception as e:
+            logger.warning(f"Failed to send password change notification: {e}")
+
+        return StandardResponse(
+            success=True,
+            message="Password changed successfully",
+            status_code=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        logger.error(f"Password change failed: {e}", exc_info=True)
+        return StandardResponse(
+            success=False,
+            message="Password change failed",
+            error="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+        
+        
+@router.post(
+    "/{user_id}/change-password-admin",
+    response_model=StandardResponse,
+    summary="Change user password (Admin only)",
+    responses={
+        200: {"description": "Password changed successfully"},
+        403: {"description": "Forbidden - insufficient permissions"},
+        404: {"description": "User not found"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def change_password_admin(
+    user_id: int,
+    new_password: str = Body(..., min_length=8, description="New password"),
+    current_user: TokenData = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change user password (Admin only) - bypasses current password verification"""
+    try:
+        # Hash new password
+        new_hashed_password = auth_service.get_password_hash(new_password)
+        
+        # Update password directly
+        result = await db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(
+                password_hash=new_hashed_password, 
+                updated_at=datetime.isoformat()
+            )
+        )
+        
+        if result.rowcount == 0:
+            return StandardResponse(
+                success=False,
+                message="User not found",
+                error=f"User with ID {user_id} not found",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        
+        await db.commit()
+        
+        # Invalidate cache
+        await redis_service.invalidate_user(user_id)
+        
+        # Get user email for email cache invalidation
+        user_email_result = await db.execute(
+            select(User.email).where(User.id == user_id)
+        )
+        user_email = user_email_result.scalar_one_or_none()
+        if user_email:
+            await redis_service.invalidate_user_by_email(user_email)
+        
+        # Send forced password change notification
+        try:
+            import asyncio
+
+            from app.hooks.notification_hooks import notify_password_changed_admin
+            
+            user_data, _ = await user_service.get_user_by_id(user_id, db)
+            if user_data:
+                asyncio.create_task(notify_password_changed_admin(user_id, user_data))
+        except Exception as e:
+            logger.warning(f"Failed to send admin password change notification: {e}")
+
+        return StandardResponse(
+            success=True,
+            message="Password changed successfully",
+            status_code=status.HTTP_200_OK,
+        )
+
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Admin password change failed for user {user_id}: {e}")
+        return StandardResponse(
+            success=False,
+            message="Password change failed",
+            error="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )

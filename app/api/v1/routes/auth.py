@@ -230,11 +230,26 @@ async def refresh_token(
 ):
     """Refresh access token using refresh token"""
     try:
-        # Verify token returns a tuple (payload, status_code)
-        payload, status_code = await auth_service.verify_token(request.refresh_token, db)
+        from app.services.auth_service import auth_service
+
+        # First check if the refresh token is expired
+        is_expired, payload = auth_service.is_token_expired(request.refresh_token)
+        
+        if is_expired:
+            logger.warning("Refresh token has expired")
+            return StandardResponse(
+                success=False,
+                message="Token refresh failed",
+                error="Refresh token has expired",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        
+        # If not expired, verify the token properly
+        verified_payload, status_code = await auth_service.verify_token(request.refresh_token, db)
 
         # Check if token verification was successful
-        if status_code != status.HTTP_200_OK or not payload:
+        if status_code != status.HTTP_200_OK or not verified_payload:
+            logger.warning(f"Invalid refresh token: {status_code}")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
@@ -242,12 +257,13 @@ async def refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Now extract data from the payload
-        user_id = payload.get("user_id")
-        email = payload.get("email")
-        user_role = payload.get("role", "user")
+        # Use the payload from proper verification
+        user_id = verified_payload.get("user_id")
+        email = verified_payload.get("email")
+        user_role = verified_payload.get("role", "user")
 
         if not user_id or not email:
+            logger.warning("Refresh token missing required fields")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
@@ -256,9 +272,11 @@ async def refresh_token(
             )
 
         # Verify user still exists and is active
-        user_data, user_status = await user_service.get_user_by_id(user_id)
+        from app.services.user_service import user_service
+        user_data, user_status = await user_service.get_user_by_id(user_id, db)
         
         if user_status != status.HTTP_200_OK or not user_data:
+            logger.warning(f"User not found during token refresh: {user_id}")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
@@ -267,6 +285,7 @@ async def refresh_token(
             )
 
         if not user_data.get("is_active", False):
+            logger.warning(f"Inactive user attempt during token refresh: {user_id}")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
@@ -274,12 +293,13 @@ async def refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Create new access token (returns tuple: (token, status_code))
+        # Create new access token
         access_token_result, access_status = auth_service.create_access_token(
             data={"user_id": user_id, "email": email, "role": user_role}
         )
 
         if access_status != status.HTTP_200_OK or not access_token_result:
+            logger.error("Failed to create access token during refresh")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
@@ -287,12 +307,13 @@ async def refresh_token(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # Create new refresh token (returns tuple: (token, status_code))
+        # Create new refresh token
         refresh_token_result, refresh_status = auth_service.create_refresh_token(
-            data={"user_id": user_id, "email": email}
+            data={"user_id": user_id, "email": email, "role": user_role}
         )
 
         if refresh_status != status.HTTP_200_OK or not refresh_token_result:
+            logger.error("Failed to create refresh token during refresh")
             return StandardResponse(
                 success=False,
                 message="Token refresh failed",
