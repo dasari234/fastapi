@@ -182,7 +182,7 @@ async def login(
             )
 
         refresh_token_result, refresh_status = auth_service.create_refresh_token(
-            data={"user_id": user_data["id"], "email": user_data["email"]}
+            data={"user_id": user_data["id"], "email": user_data["email"], "role": user_data["role"]}
         )
 
         if refresh_status != status.HTTP_200_OK or not refresh_token_result:
@@ -257,10 +257,10 @@ async def refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Use the payload from proper verification
+        # Use the payload from proper verification - PRESERVE THE ORIGINAL ROLE
         user_id = verified_payload.get("user_id")
         email = verified_payload.get("email")
-        user_role = verified_payload.get("role", "user")
+        user_role = verified_payload.get("role")  # Remove default value - use whatever is in the token
 
         if not user_id or not email:
             logger.warning("Refresh token missing required fields")
@@ -270,6 +270,20 @@ async def refresh_token(
                 error="Invalid refresh token payload",
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+
+        # If role is missing from token, get it from the database
+        if not user_role:
+            from app.services.user_service import user_service
+            user_data, user_status = await user_service.get_user_by_id(user_id, db)
+            
+            if user_status == status.HTTP_200_OK and user_data:
+                user_role = user_data.get("role", "user")
+                logger.debug(f"Retrieved role from database: {user_role}")
+            else:
+                user_role = "user"  # Fallback only if we can't get from DB
+                logger.warning(f"Could not retrieve user role from DB for user {user_id}, using default")
+        else:
+            logger.debug(f"Using role from token: {user_role}")
 
         # Verify user still exists and is active
         from app.services.user_service import user_service
@@ -293,7 +307,10 @@ async def refresh_token(
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
 
-        # Create new access token
+        # DEBUG: Log the token creation with correct role
+        logger.debug(f"Creating new tokens for user_id: {user_id}, role: {user_role}")
+
+        # Create new access token with the correct role
         access_token_result, access_status = auth_service.create_access_token(
             data={"user_id": user_id, "email": email, "role": user_role}
         )
@@ -307,7 +324,7 @@ async def refresh_token(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        # Create new refresh token
+        # Create new refresh token with the correct role
         refresh_token_result, refresh_status = auth_service.create_refresh_token(
             data={"user_id": user_id, "email": email, "role": user_role}
         )
@@ -341,7 +358,6 @@ async def refresh_token(
             error="Internal server error",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
 @router.post(
     "/logout",
     response_model=StandardResponse,

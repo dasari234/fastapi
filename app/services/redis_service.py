@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from app.config import CACHE_TTL_TOKEN, CACHE_TTL_USER
-from app.redis.redisconfig import redis_pool
+from app.redis.redis_config import redis_pool
 
 
 class RedisService:

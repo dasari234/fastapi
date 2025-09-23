@@ -17,8 +17,8 @@ from app.config import (
 )
 from app.hooks.notification_hooks import notify_login
 from app.models.user import TokenBlacklist
+from app.redis.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 from app.schemas.auth import TokenData
-from app.utils.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 
 # --- Password hashing ---
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

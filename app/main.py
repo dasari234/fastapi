@@ -13,7 +13,7 @@ from app.api.v1.routes.users import router as users_router
 from app.config import DEBUG, ENVIRONMENT, VERSION
 from app.database import close_db, init_db
 from app.middleware.cors import setup_cors
-from app.redis.redisconfig import close_redis_pool, init_redis_pool
+from app.redis.redis_config import close_redis_pool, init_redis_pool
 from app.utils.exception_handling import global_exception_handler
 from app.utils.logging_config import setup_logging
 from app.utils.logging_request import log_requests_middleware
@@ -65,8 +65,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Bookstore API",
-    description="A RESTful API for managing books and users with NeonDB",
+    title="FastAPI",
+    description="Using NeonDB to manage users, authentication, and authorization over a RESTful API",
     version=VERSION,
     debug=DEBUG,
     lifespan=lifespan,

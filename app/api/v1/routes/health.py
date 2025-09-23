@@ -249,7 +249,7 @@ async def check_redis_status():
 async def redis_status():
     """Get detailed Redis connection status"""
     from app.config import REDIS_HOST, REDIS_PORT, REDIS_SSL
-    from app.redis.redisconfig import redis_pool
+    from app.redis.redis_config import redis_pool
     
     status_info = {
         "configured_host": REDIS_HOST,

@@ -13,9 +13,9 @@ from app.models.file_history import FileHistory
 from app.models.files import FileUploadRecord
 from app.models.login_history import LoginHistory
 from app.models.user import PasswordResetToken, TokenBlacklist, User
+from app.redis.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services import auth_service, redis_service
-from app.utils.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 
 
 class UserService:
