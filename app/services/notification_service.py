@@ -18,21 +18,32 @@ class NotificationService:
         title: str,
         message: str,
         notification_type: str,
-        action_type: str,
+        action_type: str = None,
         action_data: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,  # Add metadata parameter
         db: AsyncSession = None,
     ) -> Tuple[Optional[Dict[str, Any]], int]:
         """Create a new notification and queue it for delivery"""
         async def _create_notification(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
+                # Use metadata if provided, otherwise use action_data
+                final_action_data = metadata or action_data or {}
+                
+                # Determine action_type from metadata if not provided
+                final_action_type = action_type
+                if not final_action_type and metadata and 'event' in metadata:
+                    final_action_type = metadata['event']
+                elif not final_action_type:
+                    final_action_type = "system_notification"
+                
                 # Create notification record
                 notification = Notification(
                     user_id=user_id,
                     title=title,
                     message=message,
                     notification_type=notification_type,
-                    action_type=action_type,
-                    action_data=action_data or {},
+                    action_type=final_action_type,
+                    action_data=final_action_data,
                 )
                 
                 session.add(notification)

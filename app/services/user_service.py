@@ -1,4 +1,5 @@
 from datetime import datetime
+from time import timezone
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
@@ -487,7 +488,7 @@ class UserService:
                 await session.execute(
                     update(User)
                     .where(User.id == user_id)
-                    .values(password_hash=new_hashed_password, updated_at=datetime.isoformat())
+                    .values(password_hash=new_hashed_password, updated_at=datetime.now(timezone.utc))
                 )
                 await session.commit()
                 

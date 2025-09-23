@@ -1,24 +1,27 @@
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services import notification_service
+from app.schemas.notifications import NotificationType
+from app.services.notification_service import notification_service
 
 
-async def notify_user_created(user_id: int, user_data: dict, db=None):
-    """Send notification when a user is created"""
+async def notify_user_created(user_id: int, user_data: dict):
+    """Send notification about user creation"""
     try:
-        title = "Welcome to the Platform!"
-        message = f"Your account has been successfully created. Welcome {user_data.get('first_name', 'User')}!"
+        # Import database session locally to avoid circular imports
+        from app.database import get_db_context
         
-        await notification_service.create_notification(
-            user_id=user_id,
-            title=title,
-            message=message,
-            notification_type="success",
-            action_type="user_created",
-            action_data=user_data,
-            db=db
-        )
-        logger.info(f"User creation notification sent for user {user_id}")
+        async with get_db_context() as db:
+            await notification_service.create_notification(
+                db=db,
+                user_id=user_id,
+                title="Welcome to the system!",
+                message=f"Hello {user_data.get('first_name', 'there')}! Your account has been created successfully.",
+                notification_type=NotificationType.SUCCESS,
+                action_type="user_created",  # Add action_type
+                metadata={"user_id": user_id, "event": "user_created"}  # Keep metadata for backward compatibility
+            )
+        logger.debug(f"User creation notification sent for user {user_id}")
     except Exception as e:
         logger.error(f"Error sending user creation notification: {e}")
 
@@ -62,77 +65,86 @@ async def notify_file_deleted(user_id: int, file_data: dict, db=None):
     except Exception as e:
         logger.error(f"Error sending file deletion notification: {e}")
 
-
-async def notify_login(user_id: int, login_data: dict, db=None):
-    """Send notification when a user logs in"""
+async def notify_login(user_id: int, login_data: dict, db: AsyncSession):
+    """Send notification about user login"""
     try:
-        title = "New Login Detected"
-        message = f"A new login was detected from {login_data.get('ip_address', 'unknown location')}."
+        ip_address = login_data.get('ip_address', 'Unknown')
+        user_agent = login_data.get('user_agent', 'Unknown device')
         
         await notification_service.create_notification(
+            db=db,
             user_id=user_id,
-            title=title,
-            message=message,
-            notification_type="info",
-            action_type="user_login",
-            action_data=login_data,
-            db=db
+            title="New login detected",
+            message=f"Your account was accessed from {ip_address} using {user_agent}.",
+            notification_type=NotificationType.INFO,
+            action_type="user_login",  # Add action_type
+            metadata={
+                "user_id": user_id,
+                "event": "user_login",
+                "ip_address": ip_address,
+                "user_agent": user_agent
+            }
         )
-        logger.info(f"Login notification sent for user {user_id}")
+        logger.debug(f"Login notification sent for user {user_id}")
     except Exception as e:
         logger.error(f"Error sending login notification: {e}")
-        
-async def notify_profile_updated(user_id: int, user_data: dict, db=None):
-    """Send notification when a user profile is updated"""
+
+
+async def notify_profile_updated(user_id: int, user_data: dict):
+    """Send notification about profile update"""
     try:
-        title = "Profile Updated"
-        message = "Your profile information has been successfully updated."
+        from app.database import get_db_context
         
-        await notification_service.create_notification(
-            user_id=user_id,
-            title=title,
-            message=message,
-            notification_type="info",
-            action_type="profile_updated",
-            action_data=user_data,
-            db=db
-        )
-        logger.info(f"Profile update notification sent for user {user_id}")
+        async with get_db_context() as db:
+            await notification_service.create_notification(
+                db=db,
+                user_id=user_id,
+                title="Profile updated",
+                message="Your profile information has been updated successfully.",
+                notification_type=NotificationType.INFO,
+                action_type="profile_updated",  # Add action_type
+                metadata={"user_id": user_id, "event": "profile_updated"}
+            )
+        logger.debug(f"Profile update notification sent for user {user_id}")
     except Exception as e:
         logger.error(f"Error sending profile update notification: {e}")
-        
-async def notify_password_changed(user_id: int, user_data: dict, db=None):
+
+
+async def notify_password_changed(user_id: int, user_data: dict):
     """Send notification about password change"""
     try:
-        title = "Password Changed"
-        message = "Your password has been successfully updated."
-        await notification_service.create_notification(
-            user_id=user_id,
-            title=title,
-            message=message,
-            notification_type="info",
-            action_type="password_updated",
-            action_data=user_data,
-            db=db
-        )
-        logger.info(f"Password changed for user {user_id} ({user_data['email']})")
+        from app.database import get_db_context
+        
+        async with get_db_context() as db:
+            await notification_service.create_notification(
+                db=db,
+                user_id=user_id,
+                title="Password changed",
+                message="Your password has been changed successfully.",
+                notification_type=NotificationType.WARNING,
+                action_type="password_changed",  # Add action_type
+                metadata={"user_id": user_id, "event": "password_changed"}
+            )
+        logger.debug(f"Password change notification sent for user {user_id}")
     except Exception as e:
-        logger.error(f"Failed to send password change notification: {e}")
+        logger.error(f"Error sending password change notification: {e}")
 
-async def notify_password_changed_admin(user_id: int, user_data: dict, db=None):
+
+async def notify_password_changed_admin(user_id: int, user_data: dict):
     """Send notification about admin-initiated password change"""
     try:
-        title = "Password Changed by Admin"
-        message = "Your password has been successfully updated."
-        await notification_service.create_notification(
-            user_id=user_id,
-            title=title,
-            message=message,
-            notification_type="info",
-            action_type="password_updated_by_admin",
-            action_data=user_data,
-            db=db
-        )
-        logger.info(f"Password changed by admin for user {user_id} ({user_data['email']})")
+        from app.database import get_db_context
+        
+        async with get_db_context() as db:
+            await notification_service.create_notification(
+                db=db,
+                user_id=user_id,
+                title="Password reset by administrator",
+                message="Your password has been reset by an administrator. Please change it after logging in.",
+                notification_type=NotificationType.WARNING,
+                action_type="password_changed_admin",  # Add action_type
+                metadata={"user_id": user_id, "event": "password_changed_admin"}
+            )
+        logger.debug(f"Admin password change notification sent for user {user_id}")
     except Exception as e:
-        logger.error(f"Failed to send admin password change notification: {e}")
+        logger.error(f"Error sending admin password change notification: {e}")

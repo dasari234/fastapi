@@ -78,12 +78,18 @@ class AuthService:
         """Create refresh token with status codes"""
         try:
             to_encode = data.copy()
-            expire = datetime.now(timezone.utc) + timedelta(
-                days=REFRESH_TOKEN_EXPIRE_DAYS
-            )
+            # Make sure the role is included in refresh token data
+            if 'role' not in to_encode:
+                logger.warning("Role not provided in refresh token data!")
+                
+            expire_days = REFRESH_TOKEN_EXPIRE_DAYS
+            expire = datetime.now(timezone.utc) + timedelta(days=expire_days)
+            
+            logger.debug(f"Creating refresh token with data: { {k: v for k, v in to_encode.items() if k != 'password_hash'} }")
             to_encode.update({"exp": expire})
             encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
             return encoded_jwt, status.HTTP_200_OK
+            
         except jwt.PyJWTError as e:
             logger.error(f"JWT encoding error for refresh token: {e}")
             return None, status.HTTP_500_INTERNAL_SERVER_ERROR
