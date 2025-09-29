@@ -1,5 +1,4 @@
-from datetime import datetime
-from time import timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import status
@@ -14,7 +13,8 @@ from app.models.file_history import FileHistory
 from app.models.files import FileUploadRecord
 from app.models.login_history import LoginHistory
 from app.models.user import PasswordResetToken, TokenBlacklist, User
-from app.redis.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
+from app.redis.redis_utils import (is_redis_available, safe_redis_get,
+                                   safe_redis_set)
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services import auth_service, redis_service
 
@@ -221,7 +221,7 @@ class UserService:
                 old_email = user.email
 
                 # Prepare update data
-                update_data = user_data.dict(exclude_unset=True)
+                update_data = user_data.model_dump(exclude_unset=True)
 
                 # Execute update
                 await session.execute(
