@@ -59,6 +59,9 @@ class FileService:
                     f"Found {len(existing_files)} existing files with same name and user"
                 )
 
+                db_record = None
+                status_code = status.HTTP_201_CREATED  # Initialize status_code
+
                 if existing_files:
                     current_version = max(existing_files, key=lambda x: x.version)
                     logger.info(
@@ -132,6 +135,7 @@ class FileService:
                         "version": file_upload.version,
                         "is_new_version": False,
                     }
+                    status_code = status.HTTP_201_CREATED  # Set status_code for new file
 
                 # Invalidate relevant caches after successful creation
                 if db_record:
@@ -156,8 +160,8 @@ class FileService:
 
                     logger.info(f"Invalidated Redis caches for new file: {s3_key}")
 
+                # Send notification for successful file creation
                 if db_record and status_code == status.HTTP_201_CREATED:
-                    # Send notification
                     file_data = {
                         "id": db_record.get("id"),
                         "original_filename": original_filename,
@@ -165,23 +169,13 @@ class FileService:
                         "version": db_record.get("version", 1),
                         "is_new_version": db_record.get("is_new_version", False),
                     }
+                    
+                    # Send notification as background task
                     import asyncio
-
                     asyncio.create_task(notify_file_uploaded(user_id_int, file_data))
+                    logger.info(f"File upload notification scheduled for user {user_id_int}")
 
-                    # In the delete_upload_record method, add this after successful deletion:
-                    if status_code == status.HTTP_201_CREATED:
-                        # Send notification
-                        file_data = {
-                            "s3_key": s3_key,
-                            "user_id": user_id,
-                            "folder_path": folder_path,
-                        }
-                        import asyncio
-
-                        asyncio.create_task(notify_file_deleted(user_id, file_data))
-
-                    return db_record, status.HTTP_201_CREATED
+                return db_record, status_code
 
             except Exception as e:
                 await session.rollback()
@@ -193,6 +187,46 @@ class FileService:
         else:
             async with get_db_context() as session:
                 return await _create_record(session)
+
+    async def get_file_by_id(
+        self, file_id: int, db: AsyncSession = None
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """Get file by ID"""
+        
+        async def _get_file(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
+            try:
+                result = await session.execute(
+                    select(FileUploadRecord).where(FileUploadRecord.id == file_id)
+                )
+                file = result.scalar_one_or_none()
+                
+                if not file:
+                    return None, status.HTTP_404_NOT_FOUND
+                
+                file_data = {
+                    "id": file.id,
+                    "original_filename": file.original_filename,
+                    "s3_key": file.s3_key,
+                    "s3_url": file.s3_url,
+                    "file_size": file.file_size,
+                    "content_type": file.content_type,
+                    "user_id": file.user_id,
+                    "folder_path": file.folder_path,
+                    "version": file.version,
+                    "created_at": file.created_at.isoformat() if file.created_at else None,
+                }
+                
+                return file_data, status.HTTP_200_OK
+                
+            except Exception as e:
+                logger.error(f"Error getting file by ID {file_id}: {e}")
+                return None, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        if db:
+            return await _get_file(db)
+        else:
+            async with get_db_context() as session:
+                return await _get_file(session)
 
     async def get_file_versions(
         self, s3_key: str, user_id: Optional[str] = None, db: AsyncSession = None
@@ -807,7 +841,27 @@ class FileService:
                 if not record:
                     return None, status.HTTP_404_NOT_FOUND
 
-                record_dict = record.to_dict()
+                record_dict = {
+                    "id": record.id,
+                    "original_filename": record.original_filename,
+                    "s3_key": record.s3_key,
+                    "s3_url": record.s3_url,
+                    "file_size": record.file_size,
+                    "content_type": record.content_type,
+                    "file_content": record.file_content,
+                    "score": record.score,
+                    "folder_path": record.folder_path,
+                    "user_id": record.user_id,
+                    "metadata": record.file_metadata,
+                    "upload_ip": record.upload_ip,
+                    "upload_status": record.upload_status,
+                    "processing_time_ms": record.processing_time_ms,
+                    "version": record.version,
+                    "is_current_version": record.is_current_version,
+                    "parent_version_id": record.parent_version_id,
+                    "created_at": record.created_at.isoformat() if record.created_at else None,
+                    "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+                }
 
                 # Cache the record after database fetch
                 await redis_service.cache_file(s3_key, record_dict)
@@ -828,7 +882,7 @@ class FileService:
     async def delete_upload_record(
         self, s3_key: str, db: AsyncSession = None
     ) -> Tuple[bool, int]:
-        """Delete an upload record by S3 key with status codes"""
+        """Delete an upload record by S3 key with status codes and notification"""
 
         async def _delete_record(session: AsyncSession) -> Tuple[bool, int]:
             try:
@@ -840,9 +894,22 @@ class FileService:
                 if not upload:
                     return False, status.HTTP_404_NOT_FOUND
 
-                # Get user_id and folder for cache invalidation
+                # Get file data for notification BEFORE deletion
+                file_data = {
+                    "id": upload.id,
+                    "original_filename": upload.original_filename,
+                    "s3_key": upload.s3_key,
+                    "file_size": upload.file_size,
+                    "folder_path": upload.folder_path,
+                    "user_id": upload.user_id,
+                    "version": upload.version
+                }
+
+                # Store user_id and folder for cache invalidation
                 user_id = upload.user_id
                 folder_path = upload.folder_path
+                
+                # Delete the record
                 await session.delete(upload)
                 await session.commit()
 
@@ -865,6 +932,19 @@ class FileService:
                 await redis_service.invalidate_file_list_cache("all_files")
 
                 logger.info(f"Invalidated Redis caches after deleting file: {s3_key}")
+
+                # Send real-time notification AFTER successful deletion
+                if user_id:
+                    try:
+                        await notify_file_deleted(
+                            user_id=user_id,
+                            file_data=file_data,
+                            db=session
+                        )
+                        logger.info(f"File deletion notification sent for user {user_id}, file: {file_data['original_filename']}")
+                    except Exception as notification_error:
+                        logger.error(f"Failed to send file deletion notification: {notification_error}")
+                      
 
                 return True, status.HTTP_200_OK
 

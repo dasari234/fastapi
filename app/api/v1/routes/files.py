@@ -16,6 +16,10 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user, get_db_session
+from app.hooks.notification_hooks import (
+    send_download_notification,
+    send_view_notification,
+)
 from app.schemas.base import StandardResponse
 from app.schemas.files import (
     DeleteFileResponse,
@@ -679,7 +683,6 @@ async def delete_upload_record(
                 deleted_key=s3_key,
             )
 
-        # FIX: Check permissions - non-admin users can only delete their own files
         # record["user_id"] is now INTEGER, current_user.user_id is also INTEGER
         if current_user.role != "admin" and record["user_id"] != current_user.user_id:
             logger.warning(f"Permission denied: User {current_user.user_id} tried to delete file owned by {record['user_id']}")
@@ -760,7 +763,7 @@ async def generate_download_url(
     expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-    request: Request = None #10 sep2025
+    request: Request = None
 ):
     """Generate pre-signed URL for file download"""
     try:
@@ -797,10 +800,10 @@ async def generate_download_url(
                 detail="Failed to generate download URL"
             )
             
-        #10 sep2025
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
         
+        # Log file action
         await file_history_service.log_file_action(
             db=db,
             file_upload_id=record["id"],
@@ -814,13 +817,20 @@ async def generate_download_url(
             ip_address=ip_address,
             user_agent=user_agent
         )
-        #end 10 sep2025
+        
+        # Send download notification
+        await send_download_notification(
+            db=db,
+            user_id=current_user.user_id,
+            file_record=record,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
         
         # Get file info for response
         file_info, info_status = await s3_service.get_file_info(s3_key)
         
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expiration)
-        
         
         response_data = {
             "url": download_url,
@@ -863,7 +873,7 @@ async def generate_view_url(
     expiration: int = Query(3600, ge=60, le=86400, description="URL expiration time in seconds (60-86400)"),
     current_user_result: Tuple[Optional[TokenData], int] = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
-    request: Request = None #10 sep2025
+    request: Request = None
 ):
     """Generate pre-signed URL for file viewing (inline)"""
     try:
@@ -900,10 +910,10 @@ async def generate_view_url(
                 detail="Failed to generate view URL"
             )
             
-        #10 sep2025
         ip_address = request.client.host if request and request.client else None
         user_agent = request.headers.get("user-agent") if request else None
         
+        # Log file action
         await file_history_service.log_file_action(
             db=db,
             file_upload_id=record["id"],
@@ -917,7 +927,15 @@ async def generate_view_url(
             ip_address=ip_address,
             user_agent=user_agent
         )
-        #end 10 sep2025
+        
+        # Send view notification
+        await send_view_notification(
+            db=db,
+            user_id=current_user.user_id,
+            file_record=record,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
         
         # Get file info for response
         file_info, info_status = await s3_service.get_file_info(s3_key)
@@ -947,7 +965,7 @@ async def generate_view_url(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate view URL: {str(e)}"
         )
-
+        
 @router.get(
     "/{s3_key:path}/info",
     response_model=StandardResponse,

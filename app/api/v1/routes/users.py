@@ -303,10 +303,16 @@ async def update_user(
                         error=f"You cannot modify the {field} field",
                         status_code=status.HTTP_403_FORBIDDEN,
                     )
-
+                    
+        update_data = user_data.model_dump(exclude_unset=True)
+        updated_fields = list(update_data.keys())
+        
         # Perform the update
         user_response, status_code = await user_service.update_user(
-            user_id, user_data, db
+            user_id=user_id,
+            user_data=user_data,
+            current_user_id=current_user.user_id,
+            db=db
         )
 
         if status_code == status.HTTP_404_NOT_FOUND:
@@ -327,11 +333,8 @@ async def update_user(
 
         # Send notification about profile update
         try:
-            import asyncio
-
-            from app.hooks.notification_hooks import notify_profile_updated
-
-            asyncio.create_task(notify_profile_updated(user_id, user_response))
+            from app.hooks.notification_hooks import notify_user_updated
+            await notify_user_updated(user_id, updated_fields, current_user.user_id)
         except Exception as e:
             logger.warning(f"Failed to send profile update notification: {e}")
 
@@ -377,7 +380,13 @@ async def delete_user(
 ):
     """Delete user (Admin only)"""
     try:
-        success, status_code = await user_service.delete_user(user_id, db)
+        user_data, user_status = await user_service.get_user_by_id(user_id, db)
+        user_email = user_data.get("email") if user_data else None
+        
+        success, status_code = await user_service.delete_user(user_id=user_id,
+            deleted_by=current_user.user_id, 
+            is_admin_action=True, 
+            db=db)
 
         if status_code == status.HTTP_404_NOT_FOUND:
             return StandardResponse(
@@ -394,6 +403,18 @@ async def delete_user(
                 error="Internal server error",
                 status_code=status_code,
             )
+        try:
+            from app.hooks.notification_hooks import notify_user_deleted
+            if user_email:
+                await notify_user_deleted(
+                    user_id=user_id,
+                    user_email=user_email,
+                    deleted_by=current_user.user_id,
+                    deleted_by_admin=True
+                )
+        except Exception as e:
+            logger.warning(f"Failed to send user deletion notification: {e}")
+            
 
         return StandardResponse(
             success=True,
@@ -742,10 +763,12 @@ async def change_password(
 
         # Change password
         success, status_code = await user_service.change_password(
-            current_user.user_id,
-            password_data.current_password,
-            password_data.new_password,
-            db
+            user_id=current_user.user_id,
+            current_password=password_data.current_password,
+            new_password=password_data.new_password,
+            changed_by=current_user.user_id, 
+            is_admin_action=False,
+            db=db
         )
 
         if status_code == status.HTTP_401_UNAUTHORIZED:
@@ -774,13 +797,12 @@ async def change_password(
 
         # Send password change notification
         try:
-            import asyncio
-
             from app.hooks.notification_hooks import notify_password_changed
-            
-            user_data, _ = await user_service.get_user_by_id(current_user.user_id, db)
-            if user_data:
-                asyncio.create_task(notify_password_changed(current_user.user_id, user_data))
+            await notify_password_changed(
+                user_id=current_user.user_id,
+                changed_by_admin=False,
+                changed_by=current_user.user_id
+            )
         except Exception as e:
             logger.warning(f"Failed to send password change notification: {e}")
 
@@ -855,13 +877,13 @@ async def change_password_admin(
         
         # Send forced password change notification
         try:
-            import asyncio
+            from app.hooks.notification_hooks import notify_password_changed
 
-            from app.hooks.notification_hooks import notify_password_changed_admin
-            
-            user_data, _ = await user_service.get_user_by_id(user_id, db)
-            if user_data:
-                asyncio.create_task(notify_password_changed_admin(user_id, user_data))
+            await notify_password_changed(
+                user_id=user_id,
+                changed_by_admin=True,
+                changed_by=current_user.user_id
+            )
         except Exception as e:
             logger.warning(f"Failed to send admin password change notification: {e}")
 
@@ -880,3 +902,4 @@ async def change_password_admin(
             error="Internal server error",
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+

@@ -1,3 +1,4 @@
+# app/services/user_service.py (Refactored)
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -8,15 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import CACHE_TTL_USER
 from app.database import get_db_context
-from app.hooks.notification_hooks import notify_user_created
 from app.models.file_history import FileHistory
 from app.models.files import FileUploadRecord
 from app.models.login_history import LoginHistory
 from app.models.user import PasswordResetToken, TokenBlacklist, User
-from app.redis.redis_utils import (is_redis_available, safe_redis_get,
-                                   safe_redis_set)
+from app.redis.redis_utils import is_redis_available, safe_redis_get, safe_redis_set
 from app.schemas.users import UserCreate, UserRole, UserUpdate
 from app.services import auth_service, redis_service
+from app.services.notification_tasks import (
+    send_password_change_notification,
+    send_user_created_notification,
+    send_user_deleted_notification,
+    send_user_updated_notification,
+)
 
 
 class UserService:
@@ -77,10 +82,8 @@ class UserService:
                     await safe_redis_set(f"user:{user.id}", user_response, CACHE_TTL_USER)
                     await safe_redis_set(f"user_email:{user.email}", user_response, CACHE_TTL_USER)
                 
-                # Send notification
-                if user_response:                    
-                    import asyncio
-                    asyncio.create_task(notify_user_created(user.id, user_response))
+                # Send notification via Celery task
+                send_user_created_notification.delay(user.id, user_response)
 
                 return user_response, status.HTTP_201_CREATED
 
@@ -95,6 +98,164 @@ class UserService:
             async with get_db_context() as session:
                 return await _create_user(session)
             
+    async def update_user(
+        self, user_id: int, user_data: UserUpdate, current_user_id: int, db: AsyncSession = None
+    ) -> Tuple[Optional[Dict[str, Any]], int]:
+        """Update user information and clear cache"""
+        async def _update_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
+            try:
+                # Check if user exists first
+                result = await session.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return None, status.HTTP_404_NOT_FOUND
+
+                # Get current email for cache invalidation
+                old_email = user.email
+
+                # Prepare update data
+                update_data = user_data.model_dump(exclude_unset=True)
+                
+                # Track which fields are being updated for notification
+                updated_fields = list(update_data.keys())
+
+                # Execute update
+                await session.execute(
+                    update(User).where(User.id == user_id).values(**update_data)
+                )
+                await session.commit()
+
+                # Get updated user
+                result = await session.execute(select(User).where(User.id == user_id))
+                updated_user = result.scalar_one_or_none()
+
+                user_response = {
+                    "id": updated_user.id,
+                    "email": updated_user.email,
+                    "first_name": updated_user.first_name,
+                    "last_name": updated_user.last_name,
+                    "role": updated_user.role,
+                    "is_active": updated_user.is_active,
+                    "created_at": updated_user.created_at.isoformat()
+                    if updated_user.created_at
+                    else None,
+                    "updated_at": updated_user.updated_at.isoformat()
+                    if updated_user.updated_at
+                    else None,
+                }
+
+                # Invalidate cache for both old and new email if email changed
+                if is_redis_available():
+                    await redis_service.invalidate_user(user_id)
+                    await redis_service.invalidate_user_by_email(old_email)
+
+                    if "email" in update_data and update_data["email"] != old_email:
+                        await redis_service.invalidate_user_by_email(update_data["email"])
+
+                # Cache the updated user if Redis is available
+                if is_redis_available():
+                    await safe_redis_set(f"user:{user_id}", user_response, CACHE_TTL_USER)
+                    await safe_redis_set(f"user_email:{updated_user.email}", user_response, CACHE_TTL_USER)
+
+                # Send update notification via Celery task
+                send_user_updated_notification.delay(
+                    user_id=user_id,
+                    updated_fields=updated_fields,
+                    updated_by=current_user_id
+                )
+
+                return user_response, status.HTTP_200_OK
+
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error updating user {user_id}: {e}")
+                return None, status.HTTP_500_INTERNAL_SERVER_ERROR
+
+        if db:
+            return await _update_user(db)
+        else:
+            async with get_db_context() as session:
+                return await _update_user(session)
+    
+    async def delete_user(
+        self, user_id: int, deleted_by: int, is_admin_action: bool = False, db: AsyncSession = None
+    ) -> Tuple[bool, int]:
+        """Delete user with notification"""
+
+        async def _delete_user(session: AsyncSession) -> Tuple[bool, int]:
+            try:
+                # Check if user exists first
+                result = await session.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+
+                if not user:
+                    return False, status.HTTP_404_NOT_FOUND
+
+                # Store user email for notification before deletion
+                user_email = user.email
+
+                # 1. Delete login history
+                await session.execute(
+                    delete(LoginHistory).where(LoginHistory.user_id == user_id)
+                )
+                logger.info(f"Deleted login history for user {user_id}")
+
+                # 2. Delete file actions history
+                await session.execute(
+                    delete(FileHistory).where(FileHistory.action_by == user_id)
+                )
+                logger.info(f"Deleted file actions history for user {user_id}")
+
+                # 3. File uploads
+                await session.execute(
+                    delete(FileUploadRecord).where(FileUploadRecord.user_id == user_id)
+                )
+                logger.info(f"Deleted file uploads for user {user_id}")
+                
+                # 4. Delete password reset tokens
+                await session.execute(
+                    delete(PasswordResetToken).where(PasswordResetToken.email == user.email)
+                )
+                logger.info(f"Deleted password reset tokens for user {user_id}")
+                
+                # 5. Delete token blacklist entries (if applicable)
+                await session.execute(
+                    delete(TokenBlacklist).where(TokenBlacklist.token.contains(f"user_id:{user_id}")) 
+                )
+
+                # Delete user
+                await session.delete(user)
+                await session.commit()
+
+                # Invalidate cache if Redis is available
+                if is_redis_available():
+                    await redis_service.invalidate_user(user_id)
+                    await redis_service.invalidate_user_by_email(user_email)
+                
+                # Send deletion notification via Celery task
+                send_user_deleted_notification.delay(
+                    user_id=user_id,
+                    user_email=user_email,
+                    deleted_by=deleted_by,
+                    deleted_by_admin=is_admin_action
+                )
+                
+                logger.info(f"Successfully deleted user {user_id}")
+                
+                return True, status.HTTP_200_OK
+
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error deleting user {user_id}: {e}")
+                return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+
+        if db:
+            return await _delete_user(db)
+        else:
+            async with get_db_context() as session:
+                return await _delete_user(session)
+   
     async def get_user_by_id(
         self, user_id: int, db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
@@ -203,146 +364,6 @@ class UserService:
         else:
             async with get_db_context() as session:
                 return await _get_user(session)
-
-    async def update_user(
-        self, user_id: int, user_data: UserUpdate, db: AsyncSession = None
-    ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Update user information and clear cache"""
-        async def _update_user(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
-            try:
-                # Check if user exists first
-                result = await session.execute(select(User).where(User.id == user_id))
-                user = result.scalar_one_or_none()
-
-                if not user:
-                    return None, status.HTTP_404_NOT_FOUND
-
-                # Get current email for cache invalidation
-                old_email = user.email
-
-                # Prepare update data
-                update_data = user_data.model_dump(exclude_unset=True)
-
-                # Execute update
-                await session.execute(
-                    update(User).where(User.id == user_id).values(**update_data)
-                )
-                await session.commit()
-
-                # Get updated user
-                result = await session.execute(select(User).where(User.id == user_id))
-                updated_user = result.scalar_one_or_none()
-
-                user_response = {
-                    "id": updated_user.id,
-                    "email": updated_user.email,
-                    "first_name": updated_user.first_name,
-                    "last_name": updated_user.last_name,
-                    "role": updated_user.role,
-                    "is_active": updated_user.is_active,
-                    "created_at": updated_user.created_at.isoformat()
-                    if updated_user.created_at
-                    else None,
-                    "updated_at": updated_user.updated_at.isoformat()
-                    if updated_user.updated_at
-                    else None,
-                }
-
-                # Invalidate cache for both old and new email if email changed
-                if is_redis_available():
-                    await redis_service.invalidate_user(user_id)
-                    await redis_service.invalidate_user_by_email(old_email)
-
-                    if "email" in update_data and update_data["email"] != old_email:
-                        await redis_service.invalidate_user_by_email(update_data["email"])
-
-                # Cache the updated user if Redis is available
-                if is_redis_available():
-                    await safe_redis_set(f"user:{user_id}", user_response, CACHE_TTL_USER)
-                    await safe_redis_set(f"user_email:{updated_user.email}", user_response, CACHE_TTL_USER)
-
-                return user_response, status.HTTP_200_OK
-
-            except Exception as e:
-                await session.rollback()
-                logger.error(f"Error updating user {user_id}: {e}")
-                return None, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-        if db:
-            return await _update_user(db)
-        else:
-            async with get_db_context() as session:
-                return await _update_user(session)
-    
-    async def delete_user(
-        self, user_id: int, db: AsyncSession = None
-    ) -> Tuple[bool, int]:
-        """Delete user"""
-
-        async def _delete_user(session: AsyncSession) -> Tuple[bool, int]:
-            try:
-                # Check if user exists first
-                result = await session.execute(select(User).where(User.id == user_id))
-                user = result.scalar_one_or_none()
-
-                if not user:
-                    return False, status.HTTP_404_NOT_FOUND
-
-                # 1. Delete login history
-                await session.execute(
-                    delete(LoginHistory).where(LoginHistory.user_id == user_id)
-                )
-                logger.info(f"Deleted login history for user {user_id}")
-
-                # 2. Delete file actions history
-                await session.execute(
-                    delete(FileHistory).where(FileHistory.action_by == user_id)
-                )
-                logger.info(f"Deleted file actions history for user {user_id}")
-
-                # 3. File uploads
-                await session.execute(
-                    delete(FileUploadRecord).where(FileUploadRecord.user_id == user_id)
-                )
-                logger.info(f"Deleted file uploads for user {user_id}")
-                
-                # 4. Delete password reset tokens
-                await session.execute(
-                    delete(PasswordResetToken).where(PasswordResetToken.email == user.email)
-                )
-                logger.info(f"Deleted password reset tokens for user {user_id}")
-                
-                # 5. Delete token blacklist entries (if applicable)
-                await session.execute(
-                    delete(TokenBlacklist).where(TokenBlacklist.token.contains(f"user_id:{user_id}")) 
-                )
-
-                # Get email for cache invalidation
-                user_email = user.email
-
-                # Delete user
-                await session.delete(user)
-                await session.commit()
-
-                # Invalidate cache if Redis is available
-                if is_redis_available():
-                    await redis_service.invalidate_user(user_id)
-                    await redis_service.invalidate_user_by_email(user_email)
-                
-                logger.info(f"Successfully deleted user {user_id}")
-                
-                return True, status.HTTP_200_OK
-
-            except Exception as e:
-                await session.rollback()
-                logger.error(f"Error deleting user {user_id}: {e}")
-                return False, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-        if db:
-            return await _delete_user(db)
-        else:
-            async with get_db_context() as session:
-                return await _delete_user(session)
 
     async def list_users(
         self,
@@ -455,9 +476,11 @@ class UserService:
         user_id: int, 
         current_password: str, 
         new_password: str,
+        changed_by: int = None,
+        is_admin_action: bool = False,
         db: AsyncSession = None
     ) -> Tuple[bool, int]:
-        """Change user password with verification"""
+        """Change user password with verification and notification"""
         
         async def _change_password(session: AsyncSession) -> Tuple[bool, int]:
             try:
@@ -470,16 +493,17 @@ class UserService:
                 if not user:
                     return False, status.HTTP_404_NOT_FOUND
                 
-                # Verify current password
-                is_valid, error = auth_service.verify_password(current_password, user.password_hash)
-                
-                if not is_valid:
-                    logger.warning(f"Invalid current password for user {user_id}")
-                    return False, status.HTTP_401_UNAUTHORIZED
-                
-                if error:
-                    logger.error(f"Password verification error for user {user_id}: {error}")
-                    return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+                # Verify current password (only for self-password change, not admin reset)
+                if not is_admin_action:
+                    is_valid, error = auth_service.verify_password(current_password, user.password_hash)
+                    
+                    if not is_valid:
+                        logger.warning(f"Invalid current password for user {user_id}")
+                        return False, status.HTTP_401_UNAUTHORIZED
+                    
+                    if error:
+                        logger.error(f"Password verification error for user {user_id}: {error}")
+                        return False, status.HTTP_500_INTERNAL_SERVER_ERROR
                 
                 # Hash new password
                 new_hashed_password = auth_service.get_password_hash(new_password)
@@ -504,6 +528,13 @@ class UserService:
                 if user_email and is_redis_available():
                     await redis_service.invalidate_user_by_email(user_email)
                 
+                # Send password change notification via Celery task
+                send_password_change_notification.delay(
+                    user_id=user_id,
+                    changed_by_admin=is_admin_action,
+                    changed_by=changed_by or user_id
+                )
+                
                 logger.info(f"Password changed successfully for user {user_id}")
                 return True, status.HTTP_200_OK
                 
@@ -517,6 +548,23 @@ class UserService:
         else:
             async with get_db_context() as session:
                 return await _change_password(session)
+
+    async def admin_reset_password(
+        self,
+        user_id: int,
+        new_password: str,
+        admin_user_id: int,
+        db: AsyncSession = None
+    ) -> Tuple[bool, int]:
+        """Admin reset user password (bypasses current password verification)"""
+        return await self.change_password(
+            user_id=user_id,
+            current_password="",  # Not used for admin reset
+            new_password=new_password,
+            changed_by=admin_user_id,
+            is_admin_action=True,
+            db=db
+        )
 
 
 # Create global instance
