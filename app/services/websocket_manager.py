@@ -1,6 +1,9 @@
+import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Dict, Set
 
+from fastapi import status
 from loguru import logger
 
 
@@ -20,6 +23,7 @@ class ConnectionManager:
         if is_admin:
             self.admin_users.add(user_id)
         
+        asyncio.create_task(self.sync_user_notifications(user_id))
         logger.info(f"User {user_id} connected to WebSocket manager. Admin: {is_admin}")
     
     def disconnect(self, websocket, user_id: int):
@@ -73,6 +77,35 @@ class ConnectionManager:
             "active_user_ids": list(self.active_connections.keys())
         }
 
-
+    async def sync_user_notifications(self, user_id: int):
+        """Sync notifications for a user when they connect/reconnect"""
+        try:
+            from app.database import get_db_context
+            from app.services.notification_service import notification_service
+            
+            async with get_db_context() as db:
+                # Get current notification state
+                notifications_data, status_code = await notification_service.get_user_notifications(
+                    user_id=user_id,
+                    limit=50,
+                    offset=0,
+                    unread_only=False,
+                    db=db,
+                    current_user_role='user'  # Regular user fetching their own notifications
+                )
+                
+                if status_code == status.HTTP_200_OK and notifications_data:
+                    sync_message = {
+                        "type": "notification_sync",
+                        "data": notifications_data,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    await self.send_personal_message(sync_message, user_id)
+                    logger.debug(f"Notification sync sent to user {user_id}")
+                    
+        except Exception as e:
+            logger.error(f"Error syncing notifications for user {user_id}: {e}")
+            
+            
 # Global WebSocket manager instance
 websocket_manager = ConnectionManager()

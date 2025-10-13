@@ -26,6 +26,8 @@ class NotificationService:
         """Create a new notification and send via WebSocket"""
         async def _create_notification(session: AsyncSession) -> Tuple[Optional[Dict[str, Any]], int]:
             try:
+                logger.debug(f"Creating notification for user {user_id}: {title}")
+                
                 # Use metadata if provided, otherwise use action_data
                 final_action_data = metadata or action_data or {}
                 
@@ -53,14 +55,17 @@ class NotificationService:
                 # Convert to dict for WebSocket
                 notification_dict = self._notification_to_dict(notification)
                 
+                logger.debug(f"Notification created with ID: {notification.id}")
+                
                 # Send real-time notification via WebSocket
-                await self.send_realtime_notification(user_id, notification_dict)
+                websocket_result = await self.send_realtime_notification(user_id, notification_dict)
+                logger.debug(f"WebSocket notification sent: {websocket_result}")
                 
                 return notification_dict, status.HTTP_201_CREATED
                 
             except Exception as e:
                 await session.rollback()
-                logger.error(f"Error creating notification: {e}")
+                logger.error(f"Error creating notification: {e}", exc_info=True)
                 return None, status.HTTP_500_INTERNAL_SERVER_ERROR
         
         if db:
@@ -69,7 +74,7 @@ class NotificationService:
             from app.database import get_db_context
             async with get_db_context() as session:
                 return await _create_notification(session)
-    
+            
     def _notification_to_dict(self, notification: Notification) -> Dict[str, Any]:
         """Convert notification model to dictionary"""
         return {
@@ -370,16 +375,18 @@ class NotificationService:
     ):
         """Send real-time notification via WebSocket"""
         try:
+            logger.debug(f"Attempting to send real-time notification to user {user_id}")
+            
             # Send to specific user
-            await websocket_manager.send_personal_message({
+            result = await websocket_manager.send_personal_message({
                 "type": "notification",
                 "data": notification_data
             }, user_id)
             
-            logger.debug(f"Real-time notification sent to user {user_id}")
+            logger.debug(f"Real-time notification sent to user {user_id}: {result}")
             return True
         except Exception as e:
-            logger.error(f"Error sending real-time notification to user {user_id}: {e}")
+            logger.error(f"Error sending real-time notification to user {user_id}: {e}", exc_info=True)
             return False
     
     async def send_admin_notification(
@@ -398,6 +405,134 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error sending admin notification: {e}")
             return False
+
+    async def mark_notification_as_read_admin(
+        self,
+        notification_id: int,
+        admin_user_id: int,
+        db: AsyncSession = None,
+    ) -> Tuple[bool, int]:
+        """Admin: Mark any notification as read"""
+        async def _mark_as_read_admin(session: AsyncSession) -> Tuple[bool, int]:
+            try:
+                # First get the notification to verify it exists and get the target user_id
+                result = await session.execute(
+                    select(Notification).where(Notification.id == notification_id)
+                )
+                notification = result.scalar_one_or_none()
+                
+                if not notification:
+                    return False, status.HTTP_404_NOT_FOUND
+                
+                # Update the notification
+                await session.execute(
+                    update(Notification)
+                    .where(Notification.id == notification_id)
+                    .values(is_read=True, read_at=datetime.now(timezone.utc))
+                )
+                
+                await session.commit()
+                
+                # Send real-time update to both the target user and admin
+                update_data = {
+                    "type": "notification_updated",
+                    "notification_id": notification_id,
+                    "is_read": True,
+                    "read_at": datetime.now(timezone.utc).isoformat(),
+                    "marked_by_admin": True,
+                    "admin_user_id": admin_user_id
+                }
+                
+                # Notify the notification owner
+                await self.send_realtime_notification(notification.user_id, update_data)
+                # Also notify admin who performed the action
+                await self.send_realtime_notification(admin_user_id, update_data)
+                
+                logger.info(f"Admin {admin_user_id} marked notification {notification_id} as read for user {notification.user_id}")
+                return True, status.HTTP_200_OK
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error marking notification as read (admin): {e}")
+                return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        if db:
+            return await _mark_as_read_admin(db)
+        else:
+            from app.database import get_db_context
+            async with get_db_context() as session:
+                return await _mark_as_read_admin(session)
+
+    async def mark_all_as_read_admin(
+        self,
+        target_user_id: int = None,
+        admin_user_id: int = None,
+        db: AsyncSession = None,
+    ) -> Tuple[bool, int]:
+        """Admin: Mark all notifications as read for a specific user or all users"""
+        async def _mark_all_as_read_admin(session: AsyncSession) -> Tuple[bool, int]:
+            try:
+                # Build query based on target
+                if target_user_id:
+                    # Mark all as read for specific user
+                    query = update(Notification).where(
+                        and_(
+                            Notification.user_id == target_user_id,
+                            Notification.is_read == False
+                        )
+                    )
+                    affected_user_id = target_user_id
+                else:
+                    # Mark all as read for all users (global)
+                    query = update(Notification).where(
+                        Notification.is_read == False
+                    )
+                    affected_user_id = "all_users"
+                
+                result = await session.execute(
+                    query.values(
+                        is_read=True, 
+                        read_at=datetime.now(timezone.utc)
+                    )
+                )
+                
+                await session.commit()
+                
+                # Send real-time updates
+                update_data = {
+                    "type": "all_notifications_read",
+                    "marked_by_admin": True,
+                    "admin_user_id": admin_user_id,
+                    "target_user_id": target_user_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                
+                if target_user_id:
+                    # Notify specific user
+                    await self.send_realtime_notification(target_user_id, update_data)
+                else:
+                    # Notify all connected users
+                    for user_id in list(self.active_connections.keys()):
+                        await self.send_realtime_notification(user_id, update_data)
+                
+                # Always notify the admin who performed the action
+                if admin_user_id:
+                    await self.send_realtime_notification(admin_user_id, update_data)
+                
+                logger.info(f"Admin {admin_user_id} marked all notifications as read for {affected_user_id}")
+                return True, status.HTTP_200_OK
+                
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error marking all notifications as read (admin): {e}")
+                return False, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        if db:
+            return await _mark_all_as_read_admin(db)
+        else:
+            from app.database import get_db_context
+            async with get_db_context() as session:
+                return await _mark_all_as_read_admin(session)
 
 # Create global instance
 notification_service = NotificationService()

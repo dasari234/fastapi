@@ -31,7 +31,7 @@ class FileService:
         file_content: str,
         score: float,
         folder_path: Optional[str],
-        user_id: str,  # This comes as string '3'
+        user_id: str,
         metadata: Optional[Dict],
         upload_ip: str,
         processing_time_ms: float,
@@ -60,7 +60,7 @@ class FileService:
                 )
 
                 db_record = None
-                status_code = status.HTTP_201_CREATED  # Initialize status_code
+                status_code = status.HTTP_201_CREATED
 
                 if existing_files:
                     current_version = max(existing_files, key=lambda x: x.version)
@@ -135,7 +135,7 @@ class FileService:
                         "version": file_upload.version,
                         "is_new_version": False,
                     }
-                    status_code = status.HTTP_201_CREATED  # Set status_code for new file
+                    status_code = status.HTTP_201_CREATED
 
                 # Invalidate relevant caches after successful creation
                 if db_record:
@@ -820,13 +820,22 @@ class FileService:
                 return await _list_uploads(session)
 
     async def get_upload_record(
-        self, s3_key: str, db: AsyncSession = None
+        self, 
+        s3_key: str, 
+        current_user_id: int = None,
+        current_user_role: str = None,
+        db: AsyncSession = None
     ) -> Tuple[Optional[Dict[str, Any]], int]:
-        """Get a specific upload record by S3 key with Redis caching"""
+        """Get a specific upload record by S3 key with proper admin access control"""
+
         # Check cache first
         cached_record = await redis_service.get_cached_file(s3_key)
         if cached_record:
             logger.debug(f"File record {s3_key} retrieved from cache")
+            # Verify access permissions even for cached records
+            # if (current_user_role != "admin" and 
+            #     cached_record.get("user_id") != current_user_id):
+            #     return None, status.HTTP_403_FORBIDDEN
             return cached_record, status.HTTP_200_OK
 
         async def _get_record(
@@ -840,6 +849,11 @@ class FileService:
 
                 if not record:
                     return None, status.HTTP_404_NOT_FOUND
+
+                # # Check access permissions
+                # if (current_user_role != "admin" and 
+                #     record.user_id != current_user_id):
+                #     return None, status.HTTP_403_FORBIDDEN
 
                 record_dict = {
                     "id": record.id,

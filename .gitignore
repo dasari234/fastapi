@@ -10,3 +10,4 @@ logs
 *.pyd
 .DS_Store
 init.sql
+.vercel

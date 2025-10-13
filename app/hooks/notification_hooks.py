@@ -450,7 +450,73 @@ async def send_view_notification(
     except Exception as e:
         logger.error(f"Error sending view notification: {e}")
 
-
+    async def send_view_notification(
+        db: AsyncSession,
+        user_id: int,
+        file_record: dict,
+        ip_address: str = None,
+        user_agent: str = None
+    ):
+        """Send notification when a view URL is generated"""
+        try:
+            logger.info(f"Starting view notification for user {user_id}, file: {file_record.get('original_filename')}")
+            
+            filename = file_record.get("original_filename", "Unknown file")
+            file_size = file_record.get("file_size", 0)
+            file_type = get_file_type_category(file_record.get("content_type", ""))
+            
+            # Format file size for display
+            size_display = format_file_size(file_size)
+            
+            # Create notification message
+            title = f"{file_type} View Ready"
+            message = f"View URL generated for '{filename}' ({size_display})"
+            
+            logger.debug(f"Creating view notification: {title} - {message}")
+            
+            # Create notification in database
+            notification_result = await notification_service.create_notification(
+                db=db,
+                user_id=user_id,
+                title=title,
+                message=message,
+                notification_type="info",
+                action_type="file_view_generated",
+                action_data={
+                    "filename": filename,
+                    "file_size": file_size,
+                    "file_size_display": size_display,
+                    "file_type": file_type,
+                    "file_id": file_record.get("id"),
+                    "s3_key": file_record.get("s3_key"),
+                    "content_type": file_record.get("content_type"),
+                    "generated_at": datetime.now().isoformat(),
+                    "ip_address": ip_address,
+                    "user_agent": user_agent
+                }
+            )
+            
+            logger.debug(f"Notification creation result: {notification_result}")
+            
+            # Send real-time WebSocket notification
+            await send_file_websocket_notification(
+                user_id=user_id,
+                title=title,
+                message=message,
+                action_type="file_view_generated",
+                file_data=file_record,
+                ip_address=ip_address,
+                additional_data={
+                    "file_type": file_type,
+                    "file_size_display": size_display
+                }
+            )
+            
+            logger.info(f"View notification completed for user {user_id}, file: {filename}")
+            
+        except Exception as e:
+            logger.error(f"Error in send_view_notification: {e}", exc_info=True)
+            
 # =============================================================================
 # SYSTEM & ADMIN NOTIFICATIONS
 # =============================================================================

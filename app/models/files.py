@@ -1,5 +1,16 @@
-from sqlalchemy import (JSON, Boolean, Column, DateTime, Float, ForeignKey,
-                        Index, Integer, String, Text, func)
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 from app.schemas.base import Base
@@ -40,9 +51,6 @@ class FileUploadRecord(Base):
         nullable=False,
     )
     
-    # REMOVE THIS LINE - it conflicts with the relationship in User class
-    # uploading_user = relationship("User", back_populates="file_uploads")
-
     # Index for better performance
     __table_args__ = (
         Index("ix_file_upload_user_id", "user_id"),

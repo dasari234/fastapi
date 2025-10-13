@@ -69,13 +69,11 @@ class S3Service:
                 raise ValueError(f"Failed to read file: {read_error}")
             
             finally:
-                # Always reset file pointer
                 await file.seek(0)
             
             # Generate S3 key safely
             s3_key = filename
             if folder:
-                # Clean folder path
                 folder = folder.strip('/')
                 s3_key = f"{folder}/{filename}"
             
@@ -109,7 +107,6 @@ class S3Service:
                 
             except Exception as upload_error:
                 logger.error(f"S3 upload_fileobj failed: {upload_error}")
-                # Re-raise to be caught by outer exception handler
                 raise
             
             # Generate presigned URL
@@ -118,13 +115,12 @@ class S3Service:
                 file_url = self.s3_client.generate_presigned_url(
                     'get_object',
                     Params={'Bucket': self.bucket_name, 'Key': s3_key},
-                    ExpiresIn=604800  # 7 days
+                    ExpiresIn=604800
                 )
                 logger.debug(f"Generated presigned URL: {file_url[:100]}...")
                 
             except Exception as url_error:
                 logger.error(f"Failed to generate presigned URL: {url_error}")
-                # Still return success but without URL
                 file_url = f"https://{self.bucket_name}.s3.{AWS_REGION}.amazonaws.com/{s3_key}"
             
             return {
@@ -171,8 +167,9 @@ class S3Service:
             )
         except Exception as e:
             logger.error(f"Unexpected error during upload: {e}", exc_info=True)
-            # Add more specific error message
+            
             error_detail = str(e)
+            
             if "NoneType" in error_detail:
                 error_detail = "A None value was passed where a string or bytes-like object was expected. Check file content and parameters."
             
@@ -213,19 +210,15 @@ class S3Service:
         expiration: int = 3600,
         download: bool = False
     ) -> Tuple[Optional[str], int]:
-        """
-        Generate pre-signed URL for S3 object
-        """
+        """Generate pre-signed URL for S3 object"""
         try:
             logger.debug(f"generate_presigned_url called with s3_key: '{s3_key}', expiration: {expiration}, download: {download}")
             
             if not s3_key or not isinstance(s3_key, str):
                 return None, status.HTTP_400_BAD_REQUEST
                 
-            # Extract filename for content disposition
             filename = s3_key.split('/')[-1] if '/' in s3_key else s3_key
             
-            # Determine content disposition
             content_disposition = 'attachment' if download else 'inline'
             
             # Generate presigned URL

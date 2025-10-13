@@ -723,5 +723,133 @@ async def get_websocket_stats(
             detail="Failed to retrieve WebSocket statistics"
         )
         
+@router.put(
+    "/admin/{notification_id}/read",
+    response_model=StandardResponse,
+    summary="Admin: Mark any notification as read",
+    responses={
+        200: {"description": "Notification marked as read"},
+        401: {"description": "Unauthorized"},
+        403: {"description": "Forbidden - Admin access required"},
+        404: {"description": "Notification not found"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def admin_mark_notification_as_read(
+    notification_id: int,
+    current_user_result: tuple = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Admin: Mark any user's notification as read"""
+    try:
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed"
+            )
         
+        # Check if user is admin
+        if getattr(current_user, 'role', 'user') != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required"
+            )
+        
+        success, status_code = await notification_service.mark_notification_as_read_admin(
+            notification_id, current_user.user_id, db
+        )
+        
+        if not success:
+            if status_code == status.HTTP_404_NOT_FOUND:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Notification not found"
+                )
+            else:
+                raise HTTPException(
+                    status_code=status_code,
+                    detail="Failed to mark notification as read"
+                )
+        
+        return StandardResponse(
+            success=True,
+            message="Notification marked as read by admin",
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking notification as read (admin): {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark notification as read"
+        )
+
+
+@router.put(
+    "/admin/read-all",
+    response_model=StandardResponse,
+    summary="Admin: Mark all notifications as read",
+    responses={
+        200: {"description": "All notifications marked as read"},
+        401: {"description": "Unauthorized"},
+        403: {"description": "Forbidden - Admin access required"},
+        500: {"description": "Internal server error"},
+    },
+)
+async def admin_mark_all_notifications_as_read(
+    target_user_id: Optional[int] = Query(None, description="Specific user ID to mark all as read (optional)"),
+    current_user_result: tuple = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Admin: Mark all notifications as read for a specific user or all users"""
+    try:
+        current_user, auth_status = current_user_result
+        if auth_status != status.HTTP_200_OK or not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication failed"
+            )
+        
+        # Check if user is admin
+        if getattr(current_user, 'role', 'user') != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required"
+            )
+        
+        success, status_code = await notification_service.mark_all_as_read_admin(
+            target_user_id=target_user_id,
+            admin_user_id=current_user.user_id,
+            db=db
+        )
+        
+        if not success:
+            raise HTTPException(
+                status_code=status_code,
+                detail="Failed to mark all notifications as read"
+            )
+        
+        message = "All notifications marked as read"
+        if target_user_id:
+            message = f"All notifications for user {target_user_id} marked as read"
+        
+        return StandardResponse(
+            success=True,
+            message=message,
+            status_code=status.HTTP_200_OK
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error marking all notifications as read (admin): {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to mark all notifications as read"
+        )
+        
+               
         
